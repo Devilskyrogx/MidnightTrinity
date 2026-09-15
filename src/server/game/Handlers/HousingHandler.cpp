@@ -2935,7 +2935,7 @@ void WorldSession::HandleHousingRoomAdd(WorldPackets::Housing::HousingRoomAdd co
     }
 
     TC_LOG_INFO("housing", "CMSG_HOUSING_ROOM_ADD DoorComponentID: {}, HouseRoomID: {}, FloorIndex: {}, Result: {}",
-        housingRoomAdd.TargetDoorComponentID, housingRoomAdd.HouseRoomID, housingRoomAdd.FloorIndex, uint32(result));
+        housingRoomAdd.TargetDoorComponentID, housingRoomAdd.HouseRoomID, newFloorIndex, uint32(result));
 }
 
 void WorldSession::HandleHousingRoomRemove(WorldPackets::Housing::HousingRoomRemove const& housingRoomRemove)

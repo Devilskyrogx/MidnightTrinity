@@ -266,12 +266,13 @@ void HousingRoomAdd::Read()
 {
     _worldPacket >> SourceRoomGuid;
     _worldPacket >> TargetDoorComponentID;
+    // 12.1.0.69587 sender 0x7FF7CD4F6320: guid, u32, u32, bit - no floor index (the server derives the floor from the
+    // source room and door).
     _worldPacket >> HouseRoomID;
-    _worldPacket >> FloorIndex;
     _worldPacket >> Bits<1>(AutoFurnish);
 
-    TC_LOG_DEBUG("network.opcode", "CMSG_HOUSING_ROOM_ADD SourceRoomGuid: {} DoorComponentID: {} HouseRoomID: {} FloorIndex: {} AutoFurnish: {}",
-        SourceRoomGuid.ToString(), TargetDoorComponentID, HouseRoomID, FloorIndex, AutoFurnish);
+    TC_LOG_DEBUG("network.opcode", "CMSG_HOUSING_ROOM_ADD SourceRoomGuid: {} DoorComponentID: {} HouseRoomID: {} AutoFurnish: {}",
+        SourceRoomGuid.ToString(), TargetDoorComponentID, HouseRoomID, AutoFurnish);
 }
 
 void HousingRoomRemove::Read()
