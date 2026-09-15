@@ -799,7 +799,7 @@ ObjectGuid Housing::StartPlacingNewDecor(uint32 catalogEntryId, HousingResult& r
     uint32 maxDecor = GetMaxDecorCount();
     if (GetDecorCount() >= maxDecor)
     {
-        result = HOUSING_RESULT_MAX_DECOR_REACHED;
+        result = HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
         return ObjectGuid::Empty;
     }
 
@@ -845,7 +845,7 @@ HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntr
 
     uint32 maxDecor = GetMaxDecorCount();
     if (GetDecorCount() >= maxDecor)
-        return HOUSING_RESULT_MAX_DECOR_REACHED;
+        return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
 
     // Retail semantics (verified via sniff build 66263, both alliance + horde):
     // the client ALWAYS sends a non-Empty RoomGuid in CMSG_HOUSING_DECOR_PLACE.
@@ -868,12 +868,12 @@ HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntr
     if (isExterior)
     {
         if (_exteriorDecorWeightUsed + weightCost > GetMaxExteriorDecorBudget())
-            return HOUSING_RESULT_MAX_DECOR_REACHED;
+            return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
     }
     else
     {
         if (_interiorDecorWeightUsed + weightCost > GetMaxInteriorDecorBudget())
-            return HOUSING_RESULT_MAX_DECOR_REACHED;
+            return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
     }
 
     if (!isExterior)
@@ -889,7 +889,7 @@ HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntr
                 ++roomDecorCount;
         }
         if (roomDecorCount >= MAX_HOUSING_DECOR_PER_ROOM)
-            return HOUSING_RESULT_MAX_DECOR_REACHED;
+            return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
     }
 
     auto catalogItr = _catalog.find(decorEntryId);
@@ -1017,7 +1017,7 @@ HousingResult Housing::PlaceDecor(uint32 decorEntryId, float x, float y, float z
     // Check decor count limit based on house level
     uint32 maxDecor = GetMaxDecorCount();
     if (GetDecorCount() >= maxDecor)
-        return HOUSING_RESULT_MAX_DECOR_REACHED;
+        return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
 
     // Check WeightCost-based budget (exterior vs interior) — M2: classify once.
     uint32 weightCost = sHousingMgr.GetDecorWeightCost(decorEntryId);
@@ -1032,13 +1032,13 @@ HousingResult Housing::PlaceDecor(uint32 decorEntryId, float x, float y, float z
     {
         // Outdoor decor uses exterior budget
         if (_exteriorDecorWeightUsed + weightCost > GetMaxExteriorDecorBudget())
-            return HOUSING_RESULT_MAX_DECOR_REACHED;
+            return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
     }
     else
     {
         // Indoor decor uses interior budget
         if (_interiorDecorWeightUsed + weightCost > GetMaxInteriorDecorBudget())
-            return HOUSING_RESULT_MAX_DECOR_REACHED;
+            return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
     }
 
     // Validate room exists if specified, and check per-room decor limit
@@ -1056,7 +1056,7 @@ HousingResult Housing::PlaceDecor(uint32 decorEntryId, float x, float y, float z
                 ++roomDecorCount;
         }
         if (roomDecorCount >= MAX_HOUSING_DECOR_PER_ROOM)
-            return HOUSING_RESULT_MAX_DECOR_REACHED;
+            return HOUSING_RESULT_MAX_PLACED_DECOR_REACHED;
     }
 
     // Check catalog for available copies
