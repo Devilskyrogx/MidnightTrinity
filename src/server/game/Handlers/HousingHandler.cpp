@@ -172,11 +172,8 @@ namespace
 
         if (neighborhood)
         {
+            // EvictPlayer sends the remaining members the new roster.
             neighborhood->EvictPlayer(player->GetGUID());
-
-            WorldPackets::Neighborhood::NeighborhoodRosterResidentUpdate rosterUpdate;
-            rosterUpdate.Residents.push_back({ player->GetGUID(), 2 /*Removed*/, false });
-            neighborhood->BroadcastPacket(rosterUpdate.Write(), player->GetGUID());
             neighborhood->RefreshMirrorDataForOnlineMembers();
         }
 
@@ -4177,11 +4174,9 @@ void WorldSession::HandleHousingSvcsAcceptNeighborhoodOwnership(WorldPackets::Ho
         transferNotification.HouseLevel = 0;
         neighborhood->BroadcastPacket(transferNotification.Write(), player->GetGUID());
 
-        // Broadcast roster update with role changes
-        WorldPackets::Neighborhood::NeighborhoodRosterResidentUpdate rosterUpdate;
-        rosterUpdate.Residents.push_back({ player->GetGUID(), 1 /*RoleChanged*/, true /*new owner = privileged*/ });
-        rosterUpdate.Residents.push_back({ previousOwnerGuid, 1 /*RoleChanged*/, true /*demoted to manager, still privileged*/ });
-        neighborhood->BroadcastPacket(rosterUpdate.Write());
+        // Both resident types changed.
+        neighborhood->BroadcastMemberStatus(player->GetGUID());
+        neighborhood->BroadcastMemberStatus(previousOwnerGuid);
 
         // Ownership change is a major data change — request client to reload housing data
         WorldPackets::Housing::HousingSvcRequestPlayerReloadData reloadData;

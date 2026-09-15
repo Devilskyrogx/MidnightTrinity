@@ -1743,7 +1743,10 @@ enum OpcodeServer : uint32
     SMSG_HOUSING_PHOTO_SHARING_AUTHORIZATION_CLEARED_RESULT         = 0x450382,
     SMSG_HOUSING_PHOTO_SHARING_AUTHORIZATION_RESULT                 = 0x450381,
     SMSG_HOUSING_REDEEM_DEFERRED_DECOR_RESPONSE                     = 0x55000B,
-    SMSG_HOUSING_RESET_HOUSE_RESPONSE                               = 0x590006,
+    // 12.1.0.69587 dispatcher 0x7FF7CD536260: case 0x590007 reads one u8 and runs the reset-house result handler
+    // (0x7FF7CD072AB0: "ResetHouse successful" / "ResetHouse failed", HOUSE_RESET_COMPLETED / HOUSE_RESET_FAILED). Case
+    // 0x590006 reads a u8 and a string and drops both.
+    SMSG_HOUSING_RESET_HOUSE_RESPONSE                               = 0x590007,
     SMSG_HOUSING_RESET_KIOSK_MODE_RESPONSE                          = 0x590005,
     SMSG_HOUSING_ROOM_ADD_RESPONSE                                  = 0x570001,
     SMSG_HOUSING_ROOM_APPLY_COMPONENT_MATERIALS_RESPONSE            = 0x570005,
