@@ -393,11 +393,17 @@ enum HouseSettingFlags : uint32
     HOUSE_SETTING_PLOT_ACCESS_NEIGHBORS     = 0x040,
     HOUSE_SETTING_PLOT_ACCESS_GUILD         = 0x080,
     HOUSE_SETTING_PLOT_ACCESS_FRIENDS       = 0x100,
-    HOUSE_SETTING_PLOT_ACCESS_PARTY         = 0x200
+    HOUSE_SETTING_PLOT_ACCESS_PARTY         = 0x200,
+    // 12.1 (Enum.HouseSettingFlags registration 0x7FF7CE1216E0): who may export this house as a blueprint.
+    HOUSE_SETTING_BLUEPRINT_EXPORT_ANYONE   = 0x400,
+    HOUSE_SETTING_BLUEPRINT_EXPORT_NEIGHBORS = 0x800,
+    HOUSE_SETTING_BLUEPRINT_EXPORT_GUILD    = 0x1000,
+    HOUSE_SETTING_BLUEPRINT_EXPORT_FRIENDS  = 0x2000,
+    HOUSE_SETTING_BLUEPRINT_EXPORT_PARTY    = 0x4000
 };
 
 constexpr uint32 HOUSE_SETTING_DEFAULT    = HOUSE_SETTING_PLOT_ACCESS_ANYONE; // 0x020 — sniff-verified default
-constexpr uint32 HOUSE_SETTING_VALID_MASK = 0x3FF; // bits 0-9
+constexpr uint32 HOUSE_SETTING_VALID_MASK = 0x7FFF; // bits 0-14
 
 // HousingDecorPlacementFlags enum - 5 values (bitmask)
 enum HousingDecorPlacementFlags : int32
@@ -1015,82 +1021,70 @@ static constexpr uint32 INTERIOR_DOOR_GO_ALLIANCE = 575017; // displayId 113554
 static constexpr uint32 INTERIOR_DOOR_GO_HORDE    = 587318;
 
 // ============================================================================
-// Patch 12.1.0 (build 69299) additions — RE spec:
-//   c:\dumps\tools\dump121\housing\housing_12_1_spec.md
-// Enum MEMBER NAMES are binary-verified (client reflection strings / auto_HOUSING_*
-// event + ERR_HOUSING_* error tables). Enum NUMERIC VALUES are inferred (string-order
-// ordinals) — the client enum-constant registrar tables are not cleanly recoverable
-// offline (spec §5). Flagged accordingly; confirm values against a 12.1 capture/DB.
-//
-// Restored 2026-09-01 (12.0.7->12.1 housing reconcile): this block existed in bare's
-// 12.1 WIP (commit 19eb4a2607) but was dropped when the 12.0.7 clone's HousingDefines.h
-// won the merge for this file wholesale. Recovered verbatim from that commit; no values
-// changed. HousingBlueprintMgr.h/.cpp depend on these identifiers.
+// Housing blueprints (12.1.0.69587). Enum values are the client's (HousingBlueprintConstantsDocumentation.lua,
+// PlayerHousingConstantsDocumentation.lua); limits are the Constants.HousingConsts values the client registers
+// (0x7FF7CE1254A0).
 // ============================================================================
 
-// Blueprint category. Names from HOUSING_BLUEPRINT_COLLECTION_GROUP_{HOUSE,INTERIOR,
-// EXTERIOR,ROOM,BACKUP} client event strings [BIN]. Values = string order [INF].
-enum class HousingBlueprintType : uint32
+enum class HousingBlueprintType : uint8
 {
-    House    = 0,
-    Interior = 1,
-    Exterior = 2,
-    Room     = 3,
-    Backup   = 4,
+    None     = 0,
+    House    = 1,
+    Room     = 2,
+    Interior = 3,
+    Exterior = 4,
 };
 
-// Content granularity of a blueprint's item list (JamBlueprintItemList carries decor/
-// dye/room/fixture ID sets). Mirrors HousingBlueprintType groups. Names [BIN] / values [INF].
-enum class HousingBlueprintContentType : uint32
+enum HousingBlueprintFlag : uint8
 {
-    House    = 0,
-    Interior = 1,
-    Exterior = 2,
-    Room     = 3,
-    Backup   = 4,
+    HOUSING_BLUEPRINT_FLAG_NONE             = 0x0,
+    HOUSING_BLUEPRINT_FLAG_AUTOMATIC_BACKUP = 0x1,  // client: isAutoSave = flags & 1
 };
 
-// JamHousingBlueprint.flags bitmask. Client has HousingBlueprintFlag/Meta but the member
-// values were NOT recovered offline — kept opaque; do not assume a meaning. [INF]
-enum HousingBlueprintFlags : uint32
+enum class HousingBlueprintContentType : uint8
 {
-    HOUSING_BLUEPRINT_FLAG_NONE = 0x0,
-    // values unresolved offline (spec §5) — treat JamHousingBlueprint.flags as opaque uint32
+    None      = 0,
+    HouseType = 1,
+    Room      = 2,
+    Decor     = 3,
+    Dye       = 4,
+    Fixture   = 5,
+    Other     = 6,
 };
 
-// ImportBlueprint requirement gate. Bits from ERR_HOUSING_BLUEPRINT_REQUIREMENT_* [BIN];
-// bit positions = error-string order [INF]. Import is refused unless the target house
-// satisfies all set requirements (spec §6).
 enum HousingBlueprintUnmetRequirementFlags : uint32
 {
-    HOUSING_BLUEPRINT_REQ_NONE             = 0x0,
-    HOUSING_BLUEPRINT_REQ_EXTERIOR_FACTION = 0x1,
-    HOUSING_BLUEPRINT_REQ_HOUSE_TYPE       = 0x2,
-    HOUSING_BLUEPRINT_REQ_HOUSE_SIZE       = 0x4,
+    HOUSING_BLUEPRINT_UNMET_NONE                        = 0x00,
+    HOUSING_BLUEPRINT_UNMET_INSUFFICIENT_BUDGET         = 0x01,
+    HOUSING_BLUEPRINT_UNMET_MISSING_ROOM                = 0x02,
+    HOUSING_BLUEPRINT_UNMET_MISSING_FIXTURE             = 0x04,
+    HOUSING_BLUEPRINT_UNMET_MISSING_DECOR               = 0x08,
+    HOUSING_BLUEPRINT_UNMET_MISSING_DYE                 = 0x10,
+    HOUSING_BLUEPRINT_UNMET_MISMATCHED_EXTERIOR_FACTION = 0x20,
+    HOUSING_BLUEPRINT_UNMET_HOUSE_TYPE_LOCKED           = 0x40,
+    HOUSING_BLUEPRINT_UNMET_HOUSE_SIZE_LOCKED           = 0x80,
+    // The client derives blockingRequirementFlags as unmet & 0xE7: missing decor and dyes do not stop an import, the
+    // missing pieces are left out.
+    HOUSING_BLUEPRINT_UNMET_BLOCKING_MASK               = 0xE7,
 };
 
-// JamHouseBudgetEntry.budgetType. Categories from the Lua budget accessors
-// Get{Max,Spent}PlacementBudget / Get{Max,Spent}PetPlacementBudget / GetRoomPlacementBudget
-// [BIN names] / values [INF]. Each is tracked separately within interior vs exterior.
-enum class HouseBudgetType : uint32
+enum class HousingBudgetType : uint8
 {
-    Decor   = 0,
-    PetBed  = 1,
-    Room    = 2,
-    Fixture = 3,
+    RoomPlacement  = 0,
+    DecorPlacement = 1,
+    PetDecor       = 2,
 };
+
+static constexpr uint32 HOUSING_BLUEPRINTS_MAX_PER_BNET_ACCOUNT         = 50;
+static constexpr uint32 HOUSING_BLUEPRINTS_MAX_BACKUPS_PER_BNET_ACCOUNT = 10;
+static constexpr uint32 HOUSING_BLUEPRINT_NAME_MIN_CHARACTERS           = 3;
+static constexpr uint32 HOUSING_BLUEPRINT_NAME_MAX_CHARACTERS           = 50;
 
 // Pet beds (12.1): decor items with their own placement budget. Caps come from client
 // config globals housingMaxPetBedsInterior@0x127F60 / housingMaxPetBedsExterior@0x127FD0
 // [BIN symbols]. Default caps are placeholders until a value capture/DB confirms. [INF]
 static constexpr uint32 HOUSING_MAX_PET_BEDS_INTERIOR = 6;
 static constexpr uint32 HOUSING_MAX_PET_BEDS_EXTERIOR = 6;
-
-// Blueprint per-BNet-account caps. Client events HOUSING_BLUEPRINTS_MAX_PER_BNET_ACCOUNT
-// @0x13B993F and HOUSING_BLUEPRINTS_MAX_BACKUPS_PER_BNET_ACCOUNT@0x13B9968 exist [BIN];
-// the numeric caps are format-string args, not recovered offline — placeholders. [INF]
-static constexpr uint32 HOUSING_BLUEPRINTS_MAX_PER_BNET_ACCOUNT = 50;
-static constexpr uint32 HOUSING_BLUEPRINTS_MAX_BACKUPS_PER_BNET = 10;
 
 // 12.1 raised the displayed house level cap to 12 (patch notes). MAX_HOUSE_LEVEL above is
 // already 20 (headroom); levels 11-12 are HouseLevelData.db2 rows + larger budgets +
