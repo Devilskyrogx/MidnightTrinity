@@ -1091,4 +1091,10 @@ static constexpr uint32 HOUSING_MAX_PET_BEDS_EXTERIOR = 6;
 // large-exterior unlock — a DATA change, not a code cap. [data]
 static constexpr uint32 HOUSING_DISPLAY_LEVEL_CAP_12_1 = 12;
 
+// The three post-tutorial auras (slots 8, 9, 50) are re-sent whenever the player enters either
+// housing map, so the sequence lives in one place instead of being carried by both map classes.
+class Player;
+TC_GAME_API void SendHousingPostTutorialAuras(Player* player);
+
+
 #endif // TRINITYCORE_HOUSING_DEFINES_H

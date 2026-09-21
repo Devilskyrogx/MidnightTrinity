@@ -32,7 +32,6 @@
 #include "HouseInteriorMap.h"
 #include "Housing.h"
 #include "HousingDefines.h"
-#include "HouseInteriorMap.h"
 #include "HousingMap.h"
 #include "HousingMgr.h"
 #include "HousingBlueprintMgr.h"

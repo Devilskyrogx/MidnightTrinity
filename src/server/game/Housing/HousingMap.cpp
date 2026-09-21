@@ -1296,7 +1296,7 @@ bool HousingMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
     // ENTER_PLOT callback) removes the ~2 min settle the user was seeing and
     // fires the spell triples for visitors too (the deferred block was gated
     // on the player having a house).
-    SendPostTutorialAuras(player);
+    SendHousingPostTutorialAuras(player);
     SendNeighborhoodMapEntryAuras(player);
 
     // Start the periodic housing WorldState counter timer.
@@ -1361,7 +1361,7 @@ void HousingMap::RemovePlayerFromMap(Player* player, bool remove)
     Map::RemovePlayerFromMap(player, remove);
 }
 
-void HousingMap::SendPostTutorialAuras(Player* player)
+void SendHousingPostTutorialAuras(Player* player)
 {
     // Sniff-verified: After QUEST_HOUSING_TUTORIAL_COMPLETE turn-in, three "post-tutorial" auras
     // are applied at slots 8, 9, 50. These replace old tutorial-phase auras.

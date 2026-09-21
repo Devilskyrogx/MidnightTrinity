@@ -496,6 +496,37 @@ bool Housing::LoadFromDB(PreparedQueryResult housing, PreparedQueryResult decor,
     return true;
 }
 
+// The CHAR_INS_CHARACTER_HOUSING_DECOR column list is spelled out here and nowhere else. It used to
+// be repeated at each of the three insert sites, and two of them had drifted: they stopped after
+// sourceValue, leaving petGuid and petFlag unbound, and wrote literal zeros where the decor already
+// carried its dye slots and lock flag.
+static void BindDecorInsert(CharacterDatabasePreparedStatement* stmt, ObjectGuid::LowType ownerGuid,
+    ObjectGuid decorGuid, Housing::PlacedDecor const& decor)
+{
+    uint8 index = 0;
+    stmt->setUInt64(index++, ownerGuid);
+    stmt->setUInt64(index++, decorGuid.GetCounter());
+    stmt->setUInt32(index++, decor.DecorEntryId);
+    stmt->setFloat(index++, decor.PosX);
+    stmt->setFloat(index++, decor.PosY);
+    stmt->setFloat(index++, decor.PosZ);
+    stmt->setFloat(index++, decor.RotationX);
+    stmt->setFloat(index++, decor.RotationY);
+    stmt->setFloat(index++, decor.RotationZ);
+    stmt->setFloat(index++, decor.RotationW);
+    stmt->setFloat(index++, decor.Scale);
+    stmt->setUInt32(index++, decor.DyeSlots[0]);
+    stmt->setUInt32(index++, decor.DyeSlots[1]);
+    stmt->setUInt32(index++, decor.DyeSlots[2]);
+    stmt->setUInt64(index++, decor.RoomGuid.IsEmpty() ? 0 : decor.RoomGuid.GetCounter());
+    stmt->setUInt8(index++, decor.Locked ? 1 : 0);
+    stmt->setUInt64(index++, static_cast<uint64>(decor.PlacementTime));
+    stmt->setUInt8(index++, decor.SourceType);
+    stmt->setString(index++, decor.SourceValue);
+    stmt->setUInt64(index++, decor.PetGuid.IsEmpty() ? 0 : decor.PetGuid.GetCounter());
+    stmt->setUInt8(index++, decor.PetFlag);
+}
+
 void Housing::SaveToDB(CharacterDatabaseTransaction trans)
 {
     ObjectGuid::LowType ownerGuid = _owner->GetGUID().GetCounter();
@@ -526,28 +557,7 @@ void Housing::SaveToDB(CharacterDatabaseTransaction trans)
     for (auto const& [guid, decor] : _placedDecor)
     {
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHARACTER_HOUSING_DECOR);
-        uint8 index = 0;
-        stmt->setUInt64(index++, ownerGuid);
-        stmt->setUInt64(index++, guid.GetCounter());
-        stmt->setUInt32(index++, decor.DecorEntryId);
-        stmt->setFloat(index++, decor.PosX);
-        stmt->setFloat(index++, decor.PosY);
-        stmt->setFloat(index++, decor.PosZ);
-        stmt->setFloat(index++, decor.RotationX);
-        stmt->setFloat(index++, decor.RotationY);
-        stmt->setFloat(index++, decor.RotationZ);
-        stmt->setFloat(index++, decor.RotationW);
-        stmt->setFloat(index++, decor.Scale);
-        stmt->setUInt32(index++, decor.DyeSlots[0]);
-        stmt->setUInt32(index++, decor.DyeSlots[1]);
-        stmt->setUInt32(index++, decor.DyeSlots[2]);
-        stmt->setUInt64(index++, decor.RoomGuid.IsEmpty() ? 0 : decor.RoomGuid.GetCounter());
-        stmt->setUInt8(index++, decor.Locked ? 1 : 0);
-        stmt->setUInt64(index++, static_cast<uint64>(decor.PlacementTime));
-        stmt->setUInt8(index++, decor.SourceType);
-        stmt->setString(index++, decor.SourceValue);
-        stmt->setUInt64(index++, decor.PetGuid.IsEmpty() ? 0 : decor.PetGuid.GetCounter());
-        stmt->setUInt8(index++, decor.PetFlag);
+        BindDecorInsert(stmt, ownerGuid, guid, decor);
         trans->Append(stmt);
     }
 
@@ -952,26 +962,7 @@ HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntr
 
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHARACTER_HOUSING_DECOR);
-        uint8 index = 0;
-        stmt->setUInt64(index++, _owner->GetGUID().GetCounter());
-        stmt->setUInt64(index++, decorGuid.GetCounter());
-        stmt->setUInt32(index++, decorEntryId);
-        stmt->setFloat(index++, x);
-        stmt->setFloat(index++, y);
-        stmt->setFloat(index++, z);
-        stmt->setFloat(index++, rotX);
-        stmt->setFloat(index++, rotY);
-        stmt->setFloat(index++, rotZ);
-        stmt->setFloat(index++, rotW);
-        stmt->setFloat(index++, decor.Scale);
-        stmt->setUInt32(index++, 0);
-        stmt->setUInt32(index++, 0);
-        stmt->setUInt32(index++, 0);
-        stmt->setUInt64(index++, roomGuid.IsEmpty() ? 0 : roomGuid.GetCounter());
-        stmt->setUInt8(index++, 0);
-        stmt->setUInt64(index++, static_cast<uint64>(decor.PlacementTime));
-        stmt->setUInt8(index++, decor.SourceType);
-        stmt->setString(index++, decor.SourceValue);
+        BindDecorInsert(stmt, _owner->GetGUID().GetCounter(), decorGuid, decor);
         CharacterDatabase.Execute(stmt);
     }
 
@@ -1105,26 +1096,7 @@ HousingResult Housing::PlaceDecor(uint32 decorEntryId, float x, float y, float z
     // Immediate persist for crash safety
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHARACTER_HOUSING_DECOR);
-        uint8 index = 0;
-        stmt->setUInt64(index++, _owner->GetGUID().GetCounter());
-        stmt->setUInt64(index++, decorGuid.GetCounter());
-        stmt->setUInt32(index++, decorEntryId);
-        stmt->setFloat(index++, x);
-        stmt->setFloat(index++, y);
-        stmt->setFloat(index++, z);
-        stmt->setFloat(index++, rotX);
-        stmt->setFloat(index++, rotY);
-        stmt->setFloat(index++, rotZ);
-        stmt->setFloat(index++, rotW);
-        stmt->setFloat(index++, decor.Scale);
-        stmt->setUInt32(index++, 0); // dyeSlot0
-        stmt->setUInt32(index++, 0); // dyeSlot1
-        stmt->setUInt32(index++, 0); // dyeSlot2
-        stmt->setUInt64(index++, roomGuid.IsEmpty() ? 0 : roomGuid.GetCounter());
-        stmt->setUInt8(index++, 0);  // locked
-        stmt->setUInt64(index++, static_cast<uint64>(decor.PlacementTime));
-        stmt->setUInt8(index++, decor.SourceType);
-        stmt->setString(index++, decor.SourceValue);
+        BindDecorInsert(stmt, _owner->GetGUID().GetCounter(), decorGuid, decor);
         CharacterDatabase.Execute(stmt);
     }
 

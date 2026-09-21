@@ -20,7 +20,6 @@
 #include "CriteriaHandler.h"
 #include "Housing.h"
 #include "DB2Stores.h"
-#include "Item.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "HousingDefines.h"
