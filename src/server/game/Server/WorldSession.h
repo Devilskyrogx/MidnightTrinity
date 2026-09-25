@@ -48,6 +48,7 @@ class MessageBuffer;
 class HousingPlayerHouseEntity;
 class HousingNeighborhoodMirrorEntity;
 class Player;
+class UpdateData;
 class Unit;
 class WorldPacket;
 class WorldSession;
@@ -535,20 +536,7 @@ namespace WorldPackets
         class NeighborhoodInitiativeServiceStatusCheck;
         class GetAvailableInitiativeRequest;
         class GetInitiativeActivityLogRequest;
-        class GetNeighborhoodInitiativeInfoRequest;
         class InitiativeUpdateActiveNeighborhood;
-        class NeighborhoodInitiativeOp01;
-        class NeighborhoodInitiativeOp05;
-        class NeighborhoodInitiativeOp06;
-        class NeighborhoodInitiativeOp07;
-        class NeighborhoodInitiativeOp08;
-        class NeighborhoodInitiativeOp09;
-        class NeighborhoodInitiativeOp0A;
-        class NeighborhoodInitiativeOp0B;
-        class NeighborhoodInitiativeOp0C;
-        class NeighborhoodInitiativeOp0D;
-        class NeighborhoodInitiativeOp0E;
-        class NeighborhoodInitiativeOp0F;
     }
 
     namespace Inspect
@@ -1238,6 +1226,9 @@ class TC_GAME_API WorldSession
         bool HasHousingNeighborhoodMirrorEntity() const { return _housingNeighborhoodMirrorEntity != nullptr; }
         HousingPlayerHouseEntity& GetHousingPlayerHouseEntity() const { return *_housingPlayerHouseEntity; }
         HousingNeighborhoodMirrorEntity& GetHousingNeighborhoodMirrorEntity() const { return *_housingNeighborhoodMirrorEntity; }
+        // Appends the Account (FHousingStorage_C) and HousingPlayerHouseEntity blocks for `player`:
+        // a values update when the client already holds the entity, a CREATE otherwise.
+        void BuildHousingAccountEntitiesUpdate(UpdateData* data, Player* player);
         Player* GetPlayer() const { return _player; }
         std::string const& GetPlayerName() const;
         std::string GetPlayerInfo() const;
@@ -1863,20 +1854,7 @@ class TC_GAME_API WorldSession
         void HandleNeighborhoodInitiativeServiceStatusCheck(WorldPackets::Neighborhood::NeighborhoodInitiativeServiceStatusCheck const& packet);
         void HandleGetAvailableInitiativeRequest(WorldPackets::Neighborhood::GetAvailableInitiativeRequest const& getAvailableInitiativeRequest);
         void HandleGetInitiativeActivityLogRequest(WorldPackets::Neighborhood::GetInitiativeActivityLogRequest const& getInitiativeActivityLogRequest);
-        void HandleGetNeighborhoodInitiativeInfoRequest(WorldPackets::Neighborhood::GetNeighborhoodInitiativeInfoRequest const& getNeighborhoodInitiativeInfoRequest);
         void HandleInitiativeUpdateActiveNeighborhood(WorldPackets::Neighborhood::InitiativeUpdateActiveNeighborhood const& initiativeUpdateActiveNeighborhood);
-        void HandleNeighborhoodInitiativeOp01(WorldPackets::Neighborhood::NeighborhoodInitiativeOp01 const& packet);
-        void HandleNeighborhoodInitiativeOp05(WorldPackets::Neighborhood::NeighborhoodInitiativeOp05 const& packet);
-        void HandleNeighborhoodInitiativeOp06(WorldPackets::Neighborhood::NeighborhoodInitiativeOp06 const& packet);
-        void HandleNeighborhoodInitiativeOp07(WorldPackets::Neighborhood::NeighborhoodInitiativeOp07 const& packet);
-        void HandleNeighborhoodInitiativeOp08(WorldPackets::Neighborhood::NeighborhoodInitiativeOp08 const& packet);
-        void HandleNeighborhoodInitiativeOp09(WorldPackets::Neighborhood::NeighborhoodInitiativeOp09 const& packet);
-        void HandleNeighborhoodInitiativeOp0A(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0A const& packet);
-        void HandleNeighborhoodInitiativeOp0B(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0B const& packet);
-        void HandleNeighborhoodInitiativeOp0C(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0C const& packet);
-        void HandleNeighborhoodInitiativeOp0D(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0D const& packet);
-        void HandleNeighborhoodInitiativeOp0E(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0E const& packet);
-        void HandleNeighborhoodInitiativeOp0F(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0F const& packet);
         void HandleEnableTaxiNodeOpcode(WorldPackets::Taxi::EnableTaxiNode& enableTaxiNode);
         void HandleTaxiNodeStatusQueryOpcode(WorldPackets::Taxi::TaxiNodeStatusQuery& taxiNodeStatusQuery);
         void HandleTaxiQueryAvailableNodesOpcode(WorldPackets::Taxi::TaxiQueryAvailableNodes& taxiQueryAvailableNodes);

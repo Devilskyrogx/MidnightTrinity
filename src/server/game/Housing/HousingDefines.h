@@ -415,6 +415,16 @@ enum HousingDecorPlacementFlags : int32
     DECOR_PLACEMENT_STACKABLE   = 0x10
 };
 
+// SMSG_HOUSING_GET_PLAYER_PERMISSIONS_RESPONSE flags, retail 12.1.0.69933: 0xFE in all 5 responses for the player's
+// own house; 0x10 in 8 of the 16 for other houses (the rest 0x18 or 0, rules not yet known).
+constexpr uint8 HOUSING_PERMISSIONS_OWNER   = 0xFE;
+constexpr uint8 HOUSING_PERMISSIONS_VISITOR = 0x10;
+
+// HouseDecor.db2 Flags bit carried by licensed (shop / promotional) decor. Retail 12.1.0.69933 lists only such
+// entries in SMSG_GET_ALL_LICENSED_DECOR_QUANTITIES_RESPONSE (all 8 captured have Flags 0x503 or 0x403);
+// ordinary decor (Flags 0x3) never appears there.
+constexpr int32 HOUSE_DECOR_FLAG_LICENSED = 0x400;
+
 // HousingRoomSize enum - 3 values
 enum HousingRoomSize : int8
 {
@@ -774,14 +784,10 @@ enum HouseLevelRewardValueType : uint8
 };
 
 // Constants
-// M1/A4 spatial-validation bound. Decor positions are stored in local space
-// (relative to the room origin for interior placements, relative to the plot
-// origin for exterior). Legitimate placements sit well within a couple of dozen
-// units of the origin on every axis (a plot/interior is only a few tens of yards
-// across); the sniff-verified starter decor is all within ~15. This half-extent
-// is intentionally generous so it can never reject a legitimate placement, while
-// still slamming the door on arbitrary-coordinate GameObject spam that the old
-// Position::IsPositionValid() check (|coord| < ~64000) let straight through.
+// M1/A4 spatial-validation bound. Decor positions are world coordinates (what the client sends and what
+// character_housing_decor stores), so they are measured from Housing::GetDecorPlacementAnchor: the interior
+// origin for interior decor, the owner's position for plot decor. A plot or interior is a few tens of yards
+// across; this half-extent never rejects a legitimate placement but still refuses arbitrary-coordinate spam.
 static constexpr float HOUSING_MAX_DECOR_LOCAL_EXTENT  = 1024.0f;
 // #16 Outdoor Lighting (12.0.7): DecorCategory.db2 id 4 "Lighting" (subcategories
 // 16-21: Large/Wall/Ceiling/Small/Misc Lights). 12.0.7 lets Lighting decor be
@@ -812,7 +818,6 @@ static constexpr uint32 HOUSING_DECOR_THROTTLE_WINDOW_MS = 10000;
 static constexpr uint32 HOUSING_DECOR_THROTTLE_BURST     = 40;
 static constexpr uint32 MAX_HOUSING_DECOR_PER_ROOM      = 50;
 static constexpr uint32 MAX_HOUSING_ROOMS_PER_HOUSE     = 20;
-static constexpr uint32 MAX_HOUSING_FIXTURES_PER_HOUSE  = 10;
 static constexpr uint32 MAX_HOUSING_DYE_SLOTS           = 3;
 static constexpr uint32 MAX_NEIGHBORHOOD_PLOTS          = 55;
 static constexpr uint32 MAX_NEIGHBORHOOD_MANAGERS       = 5;
@@ -877,6 +882,10 @@ static constexpr uint32 SPELL_HOUSING_MAP_ENTRY_FIXUP      = 1272741;  // "Housi
 static constexpr uint32 SPELL_HOUSING_MAP_ENTRY_REACT      = 1263578;  // "Player Action React (DNT)"
 static constexpr uint32 SPELL_HOUSING_MAP_ENTRY_ENDEAVOR   = 1276064;  // "[DNT] Endeavor Cover Aura"
 static constexpr uint32 SPELL_HOUSING_MAP_ENTRY_NEIGHBOR   = 1227147;  // "In Your Neighborhood"
+// Cast on the player after a house is bought or moved to a new plot (retail 12.1.0.69933, right after
+// SMSG_NEIGHBORHOOD_MOVE_HOUSE_RESPONSE). Triggers 1248306 (kill credit 248858), 1253658 (quest 92486),
+// 1253555 and 1260705 (aura 430: scene 3819, the move-in cutscene).
+static constexpr uint32 SPELL_HOUSING_HOUSE_ACQUIRED       = 1253572;
 // SpellXSpellVisualID baked into spell 1227147's AuraDataInfo.Visual on retail.
 static constexpr uint32 VISUAL_HOUSING_MAP_ENTRY_NEIGHBOR  = 503683;
 

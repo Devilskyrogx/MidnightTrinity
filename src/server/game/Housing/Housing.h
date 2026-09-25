@@ -26,19 +26,24 @@
 #include "Position.h"
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 class Map;
 class Player;
+struct ExteriorComponentEntry;
 
-namespace WorldPackets
+// Placed decor is stored in world space but sent to the client relative to the room entity it attaches to
+// (FMirroredPositionData_C.PositionLocalSpace): subtract the room origin and undo the room's yaw.
+inline Position HousingWorldToRoomLocal(Position const& roomWorldPos, Position const& worldPos)
 {
-    namespace Housing
-    {
-        class HousingCatalogStateSync;
-    }
+    float dx = worldPos.GetPositionX() - roomWorldPos.GetPositionX();
+    float dy = worldPos.GetPositionY() - roomWorldPos.GetPositionY();
+    float cosF = std::cos(roomWorldPos.GetOrientation());
+    float sinF = std::sin(roomWorldPos.GetOrientation());
+    return Position(cosF * dx + sinF * dy, -sinF * dx + cosF * dy, worldPos.GetPositionZ() - roomWorldPos.GetPositionZ());
 }
 
 class TC_GAME_API Housing
@@ -136,6 +141,22 @@ public:
     // Editor mode
     void SetEditorMode(HousingEditorMode mode);
     HousingEditorMode GetEditorMode() const { return _editorMode; }
+    // SMSG_HOUSING_HOUSE_STATUS_RESPONSE trailing bits: 0x80 decor, 0x40 layout, 0x20 fixture edit mode active.
+    uint8 GetEditModeStatusFlags() const
+    {
+        switch (_editorMode)
+        {
+            case HOUSING_EDITOR_MODE_BASIC_DECOR:
+            case HOUSING_EDITOR_MODE_EXPERT_DECOR:
+                return 0x80;
+            case HOUSING_EDITOR_MODE_LAYOUT:
+                return 0x40;
+            case HOUSING_EDITOR_MODE_EXTERIOR_CUSTOMIZATION:
+                return 0x20;
+            default:
+                return 0x00;
+        }
+    }
 
     // Interior state tracking (set by door script, cleared on leave)
     void SetInInterior(bool interior) { _isInInterior = interior; }
@@ -152,8 +173,9 @@ public:
     ObjectGuid StartPlacingNewDecor(uint32 catalogEntryId, HousingResult& result);
     uint32 GetPendingPlacementEntryId(ObjectGuid decorGuid) const;
     void CancelPendingPlacement(ObjectGuid decorGuid);
+    // scale: what the client placed with (HouseDecor InitialScale unless the player resized it); <= 0 means InitialScale.
     HousingResult PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntryId, float x, float y, float z,
-        float rotX, float rotY, float rotZ, float rotW, ObjectGuid roomGuid);
+        float rotX, float rotY, float rotZ, float rotW, ObjectGuid roomGuid, float scale);
     HousingResult PlaceDecor(uint32 decorEntryId, float x, float y, float z,
         float rotX, float rotY, float rotZ, float rotW, ObjectGuid roomGuid);
     HousingResult MoveDecor(ObjectGuid decorGuid, float x, float y, float z,
@@ -167,6 +189,12 @@ public:
     // so they can never disagree (the old bug: CHECK counted exterior-plot rooms
     // as exterior but CHARGE routed them to interior → exterior budget unlimited).
     static bool IsExteriorDecorPlacement(ObjectGuid roomGuid);
+    // Reference point for the decor spatial sanity check: interior origin for interior decor, the owner's
+    // position (who must stand on the plot to place) for plot decor.
+    Position GetDecorPlacementAnchor(ObjectGuid roomGuid) const;
+    // Interior decor must end up inside one of the house's rooms (RoomWmoData bounding box). The client lets a
+    // player push an item through a wall with collision disabled; without this it was saved outside every room.
+    HousingResult CheckInteriorDecorBounds(ObjectGuid roomGuid, float x, float y, float z) const;
     HousingResult CommitDecorDyes(ObjectGuid decorGuid, std::array<uint32, MAX_HOUSING_DYE_SLOTS> const& dyeSlots);
     HousingResult SetDecorLocked(ObjectGuid decorGuid, bool locked);
     // Bind (or, with an empty petGuid, clear) a battle pet on a placed decor slot.
@@ -204,6 +232,8 @@ public:
 
     // Fixture operations
     HousingResult SelectFixtureOption(uint32 fixturePointId, uint32 optionId, std::vector<uint32>* removedHookIDs = nullptr);
+    // Re-keys the fixtures on oldCompId's hooks to the equivalent hooks (same fixture type and rank) of newCompId.
+    void MoveHookFixtures(uint32 oldCompId, uint32 newCompId);
     HousingResult RemoveFixture(uint32 componentID, uint32* outHookID = nullptr);
     std::vector<Fixture const*> GetFixtures() const;
     std::unordered_map<uint32, uint32> GetFixtureOverrideMap() const;
@@ -267,6 +297,11 @@ public:
     bool HasCustomPosition() const { return _hasCustomPosition; }
     Position GetHousePosition() const { return Position(_housePosX, _housePosY, _housePosZ, _houseFacing); }
     void SetHousePosition(float x, float y, float z, float facing);
+    // Back to the plot's DB2 house position (e.g. after moving to another plot).
+    void ResetHousePosition();
+    // Exterior decor is stored in world space: when the house moves to another plot, carry every yard piece over,
+    // keeping its place relative to the plot room (fromFrame/toFrame: plot room position and yaw).
+    void RelocateExteriorDecor(Position const& fromFrame, Position const& toFrame);
 
     // Direct access to placed decor map (for GO spawning)
     std::unordered_map<ObjectGuid, PlacedDecor> const& GetPlacedDecorMap() const { return _placedDecor; }
@@ -277,15 +312,6 @@ public:
     // Called on-demand by REQUEST_STORAGE handler. Retail does NOT populate storage at login —
     // FHousingStorage_C is only sent when the player enters edit mode or requests storage.
     void PopulateCatalogStorageEntries();
-
-    // Build the per-character HousingCatalog ownership snapshot broadcast via
-    // SMSG_HOUSING_CATALOG_STATE_SYNC on every housing-map entry. Aggregates across:
-    //   - Placed decor instances -> OwnedModifiedStack entries keyed by DecorEntryId
-    //   - Storage-only stacks (catalog.Count minus placed count) -> OwnedUnmodifiedStack
-    //   - Placed rooms                                           -> Room entries (isRoom=1)
-    // PackedState bit layout matches the IDA-decoded format for ClientMirrorSystem 0x56000E:
-    //   bits 0-1 subtype | bit 3 isRoom | bit 4 catalog-visible flag (always set)
-    void BuildCatalogStateSync(WorldPackets::Housing::HousingCatalogStateSync& packet) const;
 
 private:
     uint64 GenerateDecorDbId();
@@ -301,6 +327,10 @@ private:
 
     // Populate starter fixtures (Base + Roof) on house creation
     void PopulateStarterFixtures();
+
+    // Fixtures of every house type stay stored (switching back restores them); these pick out the current one's.
+    bool IsCurrentTypeComponent(ExteriorComponentEntry const* comp) const;
+    bool HasCurrentTypeDoor() const;
 
     // #16 Outdoor Lighting (A4): enforce the 12.0.7 "two lights cannot overlap"
     // rule. Only applies when placing/moving a Lighting-category decor on the

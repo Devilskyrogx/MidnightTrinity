@@ -4338,6 +4338,16 @@ void GameObject::InitHousingDecorMirroredPosition(Position const& localPos, Quat
         attachParent.ToString(), attachFlags);
 }
 
+void GameObject::UpdateHousingDecorMirroredTransform(Position const& localPos, QuaternionData const& localRot, float localScale)
+{
+    auto posData = m_values.ModifyValue(&GameObject::m_mirroredPositionData)
+        .ModifyValue(&UF::MirroredPositionData::PositionData);
+    SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::PositionLocalSpace),
+        TaggedPosition<Position::XYZ>(localPos.GetPositionX(), localPos.GetPositionY(), localPos.GetPositionZ()));
+    SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::RotationLocalSpace), localRot);
+    SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::ScaleLocalSpace), localScale);
+}
+
 void GameObject::InitHousingFixtureData(ObjectGuid houseGuid, int32 exteriorComponentID, int32 houseExteriorWmoDataID,
     uint8 exteriorComponentType /*= 9*/, uint8 houseSize /*= 2*/, int32 exteriorComponentHookID /*= -1*/)
 {

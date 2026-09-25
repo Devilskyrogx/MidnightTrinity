@@ -389,7 +389,7 @@ public:
     bool CanVisitorExportBlueprint(Player const* visitor, ObjectGuid ownerGuid, uint32 settingsFlags) const;
 
     // Validation
-    HousingResult ValidateDecorPlacement(uint32 decorId, Position const& pos, uint32 houseLevel) const;
+    HousingResult ValidateDecorPlacement(uint32 decorId, Position const& pos, Position const& anchor, uint32 houseLevel) const;
 
     // House-finder per-player ignore list (CMSG_HOUSING_SVCS_HOUSE_FINDER_IGNORE_NEIGHBORHOOD).
     // Lazily loaded from character_housing_ignored_neighborhood, cached in memory, write-through

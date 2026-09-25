@@ -55,6 +55,8 @@ public:
     Position const& GetLocalPosition() const { return _positionLocalSpace; }
     float GetLocalScale() const { return _scaleLocalSpace; }
     void UpdateLocalScale(float scale);
+    // Local-space position/rotation/scale relative to the attach parent, as sent in FMirroredPositionData_C.
+    void UpdateLocalTransform(Position const& pos, QuaternionData const& rotation, float scale);
     uint8 GetAttachmentFlags() const { return _attachmentFlags; }
     bool IsExteriorRoot() const { return _isExteriorRoot; }
     int32 GetExteriorComponentHookID() const { return _exteriorComponentHookID; }
@@ -67,7 +69,7 @@ public:
 
     // Housing fixture
     // isRoot: true for root pieces (no parent attachment), false for child pieces.
-    // Root pieces get Tag_HouseExteriorRoot (225), children get Tag_HouseExteriorPiece (224).
+    // Every piece gets Tag_HouseExteriorPiece (224); isRoot only marks the base for server-side lookups.
     void InitHousingFixtureData(ObjectGuid houseGuid, ObjectGuid fixtureGuid,
         ObjectGuid parentFixtureGuid, int32 exteriorComponentID,
         int32 houseExteriorWmoDataID, uint8 exteriorComponentType = 9,

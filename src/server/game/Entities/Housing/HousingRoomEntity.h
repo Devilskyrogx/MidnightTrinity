@@ -30,7 +30,8 @@
 class TC_GAME_API HousingRoomEntity final : public WorldObject, public GridObject<HousingRoomEntity>, public MapObject
 {
 public:
-    explicit HousingRoomEntity();
+    // exteriorRoot: the house-exterior root Entity instead of a room (see the constructor).
+    explicit HousingRoomEntity(bool exteriorRoot = false);
 
     void AddToWorld() override;
     void RemoveFromWorld() override;

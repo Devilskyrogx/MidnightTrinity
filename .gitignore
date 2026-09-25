@@ -23,3 +23,6 @@ nbproject/*
 cmake-build-*/*
 .vs
 *.user
+
+# Local housing TODO notes
+HOUSING_TODO.md

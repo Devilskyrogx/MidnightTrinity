@@ -30,6 +30,7 @@ class HousingRoomEntity;
 class MeshObject;
 class Neighborhood;
 class Player;
+struct NeighborhoodPlotData;
 
 class TC_GAME_API HousingMap : public Map
 {
@@ -48,6 +49,14 @@ public:
     int8 GetPlotIndexForAreaTrigger(ObjectGuid atGuid) const;
     GameObject* GetPlotGameObject(uint8 plotIndex);
     void SetPlotOwnershipState(uint8 plotIndex, bool owned);
+    AreaTrigger* SpawnPlotAreaTrigger(NeighborhoodPlotData const* plot);
+    void DespawnPlotAreaTrigger(uint8 plotIndex);
+    // Retail destroys every world GameObject on a plot (bushes, broken fences, ...) when it is bought and brings
+    // them back when it is freed.
+    void SetPlotGroundCleared(NeighborhoodPlotData const* plot, bool cleared);
+    // World position and yaw of a plot's room (its GameObjects.db2 plot object, turned half a revolution).
+    bool GetPlotRoomFrame(uint8 plotIndex, Position& frame) const;
+    bool IsSpawnSuppressed(SpawnObjectType type, ObjectGuid::LowType spawnId) const override;
     HousingPlotOwnerType GetPlotOwnerTypeForPlayer(Player const* player, uint8 plotIndex) const;
     void SendPerPlayerPlotWorldStates(Player* player);
     Neighborhood* GetNeighborhood() const { return _neighborhood; }
@@ -76,27 +85,16 @@ public:
         FixtureOverrideMap const* fixtureOverrides = nullptr,
         RootOverrideMap const* rootOverrides = nullptr);
     void DespawnHouseForPlot(uint8 plotIndex);
-    void RespawnDoorGOAtHook(uint8 plotIndex, uint32 hookID, uint32 doorComponentID, Housing const* housing, Player* player = nullptr);
     void DespawnDoorGO(uint8 plotIndex);
     GameObject* GetHouseGameObject(uint8 plotIndex);
     int8 GetPlotIndexForHouseGO(ObjectGuid goGuid) const;
     uint32 GetHouseGameObjectCount() const { return static_cast<uint32>(_houseGameObjects.size()); }
 
-    // House-exterior root mirror (HighGuid::Entity, objectType=18). Carries the
-    // plot's world position in a single FMirroredPositionData_C fragment, used
-    // by the client's world-map icon picker as the target of
-    // FHousingPlayerHouse_C.EntityGUID (struct offset +56). Spawned 1:1 with
-    // the exterior root MeshObject at SpawnHouseForPlot time. See
-    // docs/HOUSING_ENTITY_MIRROR.md (pending) / memory/housing_entity_mirror_architecture.md.
-    HousingMirrorEntity* GetHouseMirror(uint8 plotIndex) const;
+    // House-exterior root Entity (HighGuid::Entity, Tag_HouseExteriorPiece + Tag_HouseExteriorRoot), attached to the
+    // plot room at the house offset; the base and roof meshes hang off it. Its GUID is the one referenced by
+    // FHousingPlayerHouse_C.EntityGUID.
+    HousingRoomEntity* GetHouseRootEntity(uint8 plotIndex) const;
     ObjectGuid GetHouseMirrorGuid(uint8 plotIndex) const;
-    // Full list of per-piece Group A mirrors for this plot (one per visible
-    // exterior fixture MeshObject, Type 9/10/11/12). Returns empty if no
-    // house spawned. Index 0 is the Type-9 root (PieceAndRoot tags); the
-    // others (Piece tag only) come from Roof/Door/Window pieces in spawn
-    // order. The root mirror's GUID is the canonical "house mirror GUID"
-    // referenced by FHousingPlayerHouse_C.EntityGUID.
-    std::vector<HousingMirrorEntity*> GetHouseMirrors(uint8 plotIndex) const;
     // Deterministic mirror-GUID derivation that does not require the mirror to
     // exist yet — used by proxy emission for neighbour plots whose plot index
     // and bnet owner are known from NeighborhoodMirror data. pieceIndex defaults
@@ -166,6 +164,8 @@ public:
     void SpawnRoomForPlot(uint8 plotIndex, Position const& housePos,
         QuaternionData const& houseRot, ObjectGuid houseGuid);
     void DespawnRoomForPlot(uint8 plotIndex);
+    void SpawnOrMoveHouseRootEntity(uint8 plotIndex, Position const& housePos, ObjectGuid rootGuid);
+    void DespawnHouseRootEntity(uint8 plotIndex);
 
     // Decor management. Functional decor (HouseDecorData.GameObjectID > 0) spawns
     // as an interactive GameObject with FHousingDecor_C + FMirroredPositionData_C
@@ -225,15 +225,12 @@ private:
     // House structure GO tracking (plotIndex -> house GO GUID)
     std::unordered_map<uint8, ObjectGuid> _houseGameObjects;
 
-    // Group A house-exterior Entity mirrors (HighGuid::Entity, objectType=18)
-    // — one per visible exterior fixture MeshObject (Type 9/10/11/12). The
-    // Type-9 (Base) entry at index 0 carries both Tag_HouseExteriorPiece +
-    // Tag_HouseExteriorRoot and is the GUID referenced by every external
-    // proxy (FHousingPlayerHouse_C.EntityGUID). The other three carry
-    // Tag_HouseExteriorPiece only. Co-spawned with the house and despawned
-    // together. Vector since retail emits 4 of these per plot (sniff idx
-    // 9984 in dump_12.0.1.66838_2026-04-15_09-35-59).
-    std::unordered_map<uint8, std::vector<std::unique_ptr<HousingMirrorEntity>>> _houseMirrorEntities;
+    // House-exterior root Entity per plot (see GetHouseRootEntity). Kept across house rebuilds like the plot room.
+    std::unordered_map<uint8, ObjectGuid> _houseRootEntityGuids;
+
+    // World GameObject spawns inside each plot's bounds (cached) and the ones kept out while their plot is owned.
+    std::unordered_map<uint8, std::vector<ObjectGuid::LowType>> _plotGroundSpawns;
+    std::unordered_set<ObjectGuid::LowType> _suppressedPlotSpawns;
 
     // "Group B" per-piece mesh-level Entity mirrors, one per visible exterior
     // fixture MeshObject (Type 9/10/11/12). Co-spawned with the house and

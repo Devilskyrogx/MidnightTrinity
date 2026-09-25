@@ -282,13 +282,11 @@ void MeshObject::InitHousingFixtureData(ObjectGuid houseGuid, ObjectGuid fixture
     _exteriorComponentID = exteriorComponentID;
     _fixtureGuid = fixtureGuid;
 
-    // Root pieces get Tag_HouseExteriorRoot (225), child pieces get Tag_HouseExteriorPiece (224).
-    // The client uses Tag_HouseExteriorRoot to identify the fixture GUID for edit mode enter/exit.
+    // Every house mesh is a Tag_HouseExteriorPiece, the base included: retail only puts Tag_HouseExteriorRoot on the
+    // root Entity (HousingMirrorEntity PieceAndRoot). A base tagged Root instead of Piece was left out of the
+    // dragged house, which the client then lowered until the roof touched the ground.
     _isExteriorRoot = isRoot;
-    if (isRoot)
-        m_entityFragments.Add(WowCS::EntityFragment::Tag_HouseExteriorRoot, IsInWorld());
-    else
-        m_entityFragments.Add(WowCS::EntityFragment::Tag_HouseExteriorPiece, IsInWorld());
+    m_entityFragments.Add(WowCS::EntityFragment::Tag_HouseExteriorPiece, IsInWorld());
 
     TC_LOG_DEBUG("housing", "MeshObject::InitHousingFixtureData: meshGuid={} fixtureGuid={} "
         "parentFixtureGuid={} houseGuid={} extCompID={} wmoDataID={} hookID={} type={} size={} isRoot={}",
@@ -302,6 +300,19 @@ void MeshObject::UpdateLocalScale(float scale)
     _scaleLocalSpace = scale;
     auto posData = m_values.ModifyValue(&MeshObject::m_mirroredPositionData)
         .ModifyValue(&UF::MirroredPositionData::PositionData);
+    SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::ScaleLocalSpace), scale);
+}
+
+void MeshObject::UpdateLocalTransform(Position const& pos, QuaternionData const& rotation, float scale)
+{
+    _positionLocalSpace = pos;
+    _rotationLocalSpace = rotation;
+    _scaleLocalSpace = scale;
+    auto posData = m_values.ModifyValue(&MeshObject::m_mirroredPositionData)
+        .ModifyValue(&UF::MirroredPositionData::PositionData);
+    SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::PositionLocalSpace),
+        TaggedPosition<Position::XYZ>(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()));
+    SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::RotationLocalSpace), rotation);
     SetUpdateFieldValue(posData.ModifyValue(&UF::MirroredMeshObjectData::ScaleLocalSpace), scale);
 }
 

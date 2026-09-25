@@ -28,8 +28,6 @@ void AddSC_cast_commandscript();
 void AddSC_character_commandscript();
 void AddSC_cheat_commandscript();
 void AddSC_debug_commandscript();
-void AddSC_decorduel_commandscript();
-void AddSC_postal_commandscript();
 void AddSC_deserter_commandscript();
 void AddSC_disable_commandscript();
 void AddSC_event_commandscript();
@@ -78,8 +76,6 @@ void AddCommandsScripts()
     AddSC_character_commandscript();
     AddSC_cheat_commandscript();
     AddSC_debug_commandscript();
-    AddSC_decorduel_commandscript();
-    AddSC_postal_commandscript();
     AddSC_deserter_commandscript();
     AddSC_disable_commandscript();
     AddSC_event_commandscript();

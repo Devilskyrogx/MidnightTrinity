@@ -944,7 +944,7 @@ bool HousingMgr::CanVisitorExportBlueprint(Player const* visitor, ObjectGuid own
     return false;
 }
 
-HousingResult HousingMgr::ValidateDecorPlacement(uint32 decorId, Position const& pos, uint32 houseLevel) const
+HousingResult HousingMgr::ValidateDecorPlacement(uint32 decorId, Position const& pos, Position const& anchor, uint32 houseLevel) const
 {
     HouseDecorData const* decorEntry = GetHouseDecorData(decorId);
     if (!decorEntry)
@@ -954,14 +954,11 @@ HousingResult HousingMgr::ValidateDecorPlacement(uint32 decorId, Position const&
     if (!pos.IsPositionValid())
         return HOUSING_RESULT_BOUNDS_FAILURE_ROOM;
 
-    // M1/A4: reject placements outside the plausible room/plot AABB. Decor
-    // coordinates are local-space (room- or plot-relative), so a legitimate
-    // target is always close to the origin; anything beyond HOUSING_MAX_DECOR_
-    // LOCAL_EXTENT on any axis is arbitrary-coordinate GameObject spam and is
-    // refused with a bounds-failure the client renders as "out of bounds".
-    if (std::fabs(pos.GetPositionX()) > HOUSING_MAX_DECOR_LOCAL_EXTENT ||
-        std::fabs(pos.GetPositionY()) > HOUSING_MAX_DECOR_LOCAL_EXTENT ||
-        std::fabs(pos.GetPositionZ()) > HOUSING_MAX_DECOR_LOCAL_EXTENT)
+    // M1/A4: reject placements far from the house they belong to (arbitrary-coordinate spam). Decor positions
+    // are world coordinates; measuring them from 0,0,0 refused every plot placement (plots sit at x ~ 3000).
+    if (std::fabs(pos.GetPositionX() - anchor.GetPositionX()) > HOUSING_MAX_DECOR_LOCAL_EXTENT ||
+        std::fabs(pos.GetPositionY() - anchor.GetPositionY()) > HOUSING_MAX_DECOR_LOCAL_EXTENT ||
+        std::fabs(pos.GetPositionZ() - anchor.GetPositionZ()) > HOUSING_MAX_DECOR_LOCAL_EXTENT)
         return HOUSING_RESULT_BOUNDS_FAILURE_PLOT;
 
     // Validate house level meets decor requirements (if any level restriction exists)
@@ -1666,7 +1663,15 @@ void HousingMgr::BuildExteriorComponentIndexes()
 std::vector<ExteriorComponentHookEntry const*> const* HousingMgr::GetHooksOnComponent(uint32 extCompID) const
 {
     auto itr = _hooksByExtComp.find(extCompID);
-    return itr != _hooksByExtComp.end() ? &itr->second : nullptr;
+    if (itr != _hooksByExtComp.end())
+        return &itr->second;
+
+    // DB2 only hangs hooks on base shapes (ParentComponentID == 0); a colour variant of a base or roof shares its
+    // shape's hooks. Without this a recoloured base lost its door and windows.
+    if (ExteriorComponentEntry const* comp = sExteriorComponentStore.LookupEntry(extCompID))
+        if (comp->ParentComponentID > 0 && static_cast<uint32>(comp->ParentComponentID) != extCompID)
+            return GetHooksOnComponent(static_cast<uint32>(comp->ParentComponentID));
+    return nullptr;
 }
 
 uint32 HousingMgr::GetDefaultFixtureForType(uint8 componentType, uint32 wmoDataID, uint8 houseSize /*= 0*/) const

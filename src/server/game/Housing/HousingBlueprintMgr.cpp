@@ -200,7 +200,8 @@ void PlaceBlueprintDecor(Player* player, Housing* housing, HousingBlueprintDecor
             ++placedOfType;
 
     ObjectGuid const decorGuid = fromPool ? pooled.Guid : housing->GenerateDecorGuid(decor.DecorEntryId);
-    HousingResult placeResult = housing->PlaceDecorWithGuid(decorGuid, decor.DecorEntryId, x, y, z, rot.X, rot.Y, rot.Z, rot.W, roomGuid);
+    HousingResult placeResult = housing->PlaceDecorWithGuid(decorGuid, decor.DecorEntryId, x, y, z, rot.X, rot.Y, rot.Z, rot.W, roomGuid,
+        decor.Scale);
     if (placeResult != HOUSING_RESULT_SUCCESS)
     {
         if (fromPool)
@@ -217,9 +218,6 @@ void PlaceBlueprintDecor(Player* player, Housing* housing, HousingBlueprintDecor
         player->GetSession()->GetBattlenetAccount().RemoveHousingDecorStorageEntry(ObjectGuid::Create<HighGuid::Housing>(
             /*subType*/ 1, /*arg1*/ sRealmList->GetCurrentRealmId().Realm, /*arg2*/ decor.DecorEntryId, uniqueId));
     }
-
-    if (std::abs(decor.Scale - 1.0f) > 0.001f && decor.Scale > 0.0f)
-        housing->MoveDecor(decorGuid, x, y, z, rot.X, rot.Y, rot.Z, rot.W, decor.Scale);
 
     if (std::any_of(decor.DyeSlots.begin(), decor.DyeSlots.end(), [](uint32 dye) { return dye != 0; }))
         housing->CommitDecorDyes(decorGuid, decor.DyeSlots);

@@ -2334,6 +2334,9 @@ void Map::ApplyDynamicModeRespawnScaling(WorldObject const* obj, ObjectGuid::Low
 bool Map::ShouldBeSpawnedOnGridLoad(SpawnObjectType type, ObjectGuid::LowType spawnId) const
 {
     ASSERT(SpawnData::TypeHasData(type));
+    if (IsSpawnSuppressed(type, spawnId))
+        return false;
+
     // check if the object is on its respawn timer
     if (GetRespawnTime(type, spawnId))
         return false;
@@ -2677,6 +2680,15 @@ void Map::RemoveAllObjectsInRemoveList()
                 // make sure that like sources auras/etc removed before destructor start
                 obj->ToCreature()->CleanupsBeforeDelete();
                 RemoveFromMap(obj->ToCreature(), true);
+                break;
+            // Housing grid objects: without these a despawned house piece or plot room stayed in the grid, flagged
+            // destroyed, and a respawn with the same GUID (house moved back to a plot) was destroyed and re-created
+            // for every client on each visibility update.
+            case TYPEID_MESH_OBJECT:
+                RemoveFromMap(obj->ToMeshObject(), true);
+                break;
+            case TYPEID_HOUSING_ENTITY:
+                RemoveFromMap(static_cast<HousingRoomEntity*>(obj), true);
                 break;
             default:
                 TC_LOG_ERROR("maps", "Non-grid object (TypeId: {}) is in grid object remove list, ignored.", obj->GetTypeId());

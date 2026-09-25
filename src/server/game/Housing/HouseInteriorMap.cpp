@@ -1157,21 +1157,8 @@ void HouseInteriorMap::SpawnInteriorDecorFromList(std::vector<Housing::PlacedDec
 
         QuaternionData rot(decor.RotationX, decor.RotationY, decor.RotationZ, decor.RotationW);
 
-        float localX = worldX, localY = worldY, localZ = worldZ;
-        if (!roomEntityGuid.IsEmpty())
-        {
-            float dx = worldX - roomWorldPos.GetPositionX();
-            float dy = worldY - roomWorldPos.GetPositionY();
-            float roomFacing = roomWorldPos.GetOrientation();
-            float cosF = std::cos(roomFacing);
-            float sinF = std::sin(roomFacing);
-            localX =  cosF * dx + sinF * dy;
-            localY = -sinF * dx + cosF * dy;
-            localZ = worldZ - roomWorldPos.GetPositionZ();
-        }
-
-        Position localPos(localX, localY, localZ);
         Position worldPos(worldX, worldY, worldZ);
+        Position localPos = roomEntityGuid.IsEmpty() ? worldPos : HousingWorldToRoomLocal(roomWorldPos, worldPos);
         float decorScale = decor.Scale > 0.01f ? decor.Scale : 1.0f;
         uint8 attachFlags = roomEntityGuid.IsEmpty() ? uint8(0) : uint8(3);
 
@@ -1260,7 +1247,7 @@ void HouseInteriorMap::SpawnInteriorDecorFromList(std::vector<Housing::PlacedDec
             ++spawnCount;
             TC_LOG_INFO("housing", "HouseInteriorMap::SpawnInteriorDecor: Spawned decor MeshObject fileDataID={} "
                 "at world({:.1f},{:.1f},{:.1f}) local({:.1f},{:.1f},{:.1f}) room={}",
-                fileDataID, worldX, worldY, worldZ, localX, localY, localZ, roomEntityGuid.ToString());
+                fileDataID, worldX, worldY, worldZ, localPos.GetPositionX(), localPos.GetPositionY(), localPos.GetPositionZ(), roomEntityGuid.ToString());
         }
         else
         {
@@ -1351,21 +1338,8 @@ void HouseInteriorMap::SpawnSingleInteriorDecor(Housing::PlacedDecor const& deco
 
     QuaternionData rot(decor.RotationX, decor.RotationY, decor.RotationZ, decor.RotationW);
 
-    float localX = worldX, localY = worldY, localZ = worldZ;
-    if (!roomEntityGuid.IsEmpty())
-    {
-        float dx = worldX - roomWorldPos.GetPositionX();
-        float dy = worldY - roomWorldPos.GetPositionY();
-        float roomFacing = roomWorldPos.GetOrientation();
-        float cosF = std::cos(roomFacing);
-        float sinF = std::sin(roomFacing);
-        localX =  cosF * dx + sinF * dy;
-        localY = -sinF * dx + cosF * dy;
-        localZ = worldZ - roomWorldPos.GetPositionZ();
-    }
-
-    Position localPos(localX, localY, localZ);
     Position worldPos(worldX, worldY, worldZ);
+    Position localPos = roomEntityGuid.IsEmpty() ? worldPos : HousingWorldToRoomLocal(roomWorldPos, worldPos);
     float decorScale = decor.Scale > 0.01f ? decor.Scale : 1.0f;
     uint8 attachFlags = roomEntityGuid.IsEmpty() ? uint8(0) : uint8(3);
 
@@ -1450,6 +1424,17 @@ void HouseInteriorMap::UpdateDecorPosition(ObjectGuid decorGuid, Position const&
     if (itr == _decorGuidToObjGuid.end())
         return;
 
+    // The client renders decor from its room-relative transform (FMirroredPositionData_C), so that has to move
+    // too - relocating only the server-side world position left every re-sent CREATE (re-entry, relog) at the
+    // spawn-time spot.
+    auto toLocal = [this](ObjectGuid roomGuid, Position const& worldPos)
+    {
+        for (HousingRoomEntity const* re : _roomEntities)
+            if (re && re->GetGUID() == roomGuid)
+                return HousingWorldToRoomLocal(re->GetPosition(), worldPos);
+        return worldPos;
+    };
+
     ObjectGuid objGuid = itr->second;
     if (objGuid.IsGameObject())
     {
@@ -1459,6 +1444,7 @@ void HouseInteriorMap::UpdateDecorPosition(ObjectGuid decorGuid, Position const&
             go->SetLocalRotation(rot.x, rot.y, rot.z, rot.w);
             if (std::abs(go->GetObjectScale() - scale) > 0.001f)
                 go->SetObjectScale(scale);
+            go->UpdateHousingDecorMirroredTransform(toLocal(go->GetHousingDecorAttachParent(), pos), rot, scale);
             TC_LOG_DEBUG("housing", "HouseInteriorMap::UpdateDecorPosition: Moved decor GameObject {} to ({:.1f},{:.1f},{:.1f}) scale={:.2f}",
                 decorGuid.ToString(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), scale);
         }
@@ -1466,8 +1452,7 @@ void HouseInteriorMap::UpdateDecorPosition(ObjectGuid decorGuid, Position const&
     else if (MeshObject* mesh = GetMeshObject(objGuid))
     {
         mesh->Relocate(pos);
-        if (std::abs(mesh->GetLocalScale() - scale) > 0.001f)
-            mesh->UpdateLocalScale(scale);
+        mesh->UpdateLocalTransform(toLocal(mesh->GetAttachParentGUID(), pos), rot, scale);
         TC_LOG_DEBUG("housing", "HouseInteriorMap::UpdateDecorPosition: Moved decor MeshObject {} to ({:.1f},{:.1f},{:.1f}) scale={:.2f}",
             decorGuid.ToString(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), scale);
     }
@@ -1563,8 +1548,17 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
         }
     }
 
-    if (preloadHousing && player->GetGUID() == _owner)
+    bool const ownerPreSpawn = preloadHousing && player->GetGUID() == _owner;
+    if (ownerPreSpawn)
     {
+        // Rebuild rooms left over from an earlier visit (they may carry stale fragment formats),
+        // but only while nobody is standing in them. The owner is not on the map yet, so no
+        // DESTROY reaches them; rebuilding after Map::AddPlayerToMap instead would destroy the
+        // entities the initial UPDATE_OBJECT just delivered and leave the editor pointing at
+        // removed room entities (client crash on opening the house editor).
+        if (_roomsSpawned && !HavePlayers())
+            DespawnAllRoomMeshObjects();
+
         // Clear exterior fixture edit mode that persists across map transfer
         if (preloadHousing->GetEditorMode() != HOUSING_EDITOR_MODE_NONE)
         {
@@ -1640,8 +1634,9 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
 
             housing->SetInInterior(true);
 
-            // Spawn room meshes on first entry
-            if (player->GetGUID() == _owner)
+            // Spawn room meshes on first entry. The owner's rooms were already (re)built in the
+            // pre-spawn above and delivered with the initial UPDATE_OBJECT.
+            if (player->GetGUID() == _owner && !ownerPreSpawn)
             {
                 // Always force a fresh spawn on login — old entities from a previous binary/session
                 // may have stale fragment formats (e.g., root MeshObjects with FHousingRoom_C that
@@ -1781,16 +1776,7 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
                         UpdateData storageUpdate(p->GetMapId());
                         WorldPacket storagePacket;
 
-                        session->GetBattlenetAccount().BuildCreateUpdateBlockForPlayer(&storageUpdate, p);
-                        p->m_clientGUIDs.insert(session->GetBattlenetAccount().GetGUID());
-
-                        if (p->HaveAtClient(&session->GetHousingPlayerHouseEntity()))
-                            session->GetHousingPlayerHouseEntity().BuildValuesUpdateBlockForPlayer(&storageUpdate, p);
-                        else
-                        {
-                            session->GetHousingPlayerHouseEntity().BuildCreateUpdateBlockForPlayer(&storageUpdate, p);
-                            p->m_clientGUIDs.insert(session->GetHousingPlayerHouseEntity().GetGUID());
-                        }
+                        session->BuildHousingAccountEntitiesUpdate(&storageUpdate, p);
 
                         // Decor and HousingRoomEntity CREATEs are sent by the map visibility
                         // system (AddToMap in SpawnRoomMeshObjects/SpawnInteriorDecor).

@@ -1253,6 +1253,7 @@ void Neighborhood::BuildRosterResponse(WorldPackets::Neighborhood::NeighborhoodG
             {
                 data.HouseGuid = plotInfo->HouseGuid;
                 data.HouseLevel = plotInfo->HouseLevel;
+                data.HouseSettingFlags = plotInfo->HouseSettingsFlags;
             }
         }
     }

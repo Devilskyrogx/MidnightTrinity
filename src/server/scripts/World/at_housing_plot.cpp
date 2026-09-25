@@ -131,19 +131,18 @@ struct at_housing_plot : AreaTriggerAI
                 statusResponse.HouseGuid = ownerHousing->GetHouseGuid();
                 statusResponse.AccountGuid = player->GetSession()->GetBattlenetAccountGUID();
                 statusResponse.OwnerPlayerGuid = ownerGuid;
-                statusResponse.NeighborhoodGuid = ownerHousing->GetNeighborhoodGuid();
                 statusResponse.Status = 0;
-                statusResponse.PermissionFlags = isOwnPlot ? 0xE0 : 0x40; // owner gets full, visitor gets plot-entry only
+                statusResponse.EditModeFlags = isOwnPlot ? ownerHousing->GetEditModeStatusFlags() : 0;
                 player->SendDirectMessage(statusResponse.Write());
 
                 WorldPackets::Housing::HousingGetPlayerPermissionsResponse permResponse;
                 permResponse.HouseGuid = ownerHousing->GetHouseGuid();
                 permResponse.ResultCode = 0;
-                permResponse.PermissionFlags = isOwnPlot ? 0xE0 : 0x40;
+                permResponse.PermissionFlags = isOwnPlot ? HOUSING_PERMISSIONS_OWNER : HOUSING_PERMISSIONS_VISITOR;
                 player->SendDirectMessage(permResponse.Write());
 
                 TC_LOG_DEBUG("housing", "at_housing_plot: Sent HouseStatus+Permissions for player {} (own={}, flags=0x{:X})",
-                    player->GetGUID().ToString(), isOwnPlot, isOwnPlot ? 0xE0 : 0x40);
+                    player->GetGUID().ToString(), isOwnPlot, permResponse.PermissionFlags);
             }
         }
 
@@ -216,12 +215,10 @@ struct at_housing_plot : AreaTriggerAI
                     statusResponse.HouseGuid = housing->GetHouseGuid();
                     statusResponse.AccountGuid = player->GetSession()->GetBattlenetAccountGUID();
                     statusResponse.OwnerPlayerGuid = player->GetGUID();
-                    statusResponse.NeighborhoodGuid = housing->GetNeighborhoodGuid();
                     statusResponse.Status = 0;
-                    statusResponse.PermissionFlags = 0x00; // leaving plot — clear all permissions
                     player->SendDirectMessage(statusResponse.Write());
 
-                    TC_LOG_DEBUG("housing", "at_housing_plot: Sent HouseStatusResponse(PermissionFlags=0) for plot owner {} leaving plot",
+                    TC_LOG_DEBUG("housing", "at_housing_plot: Sent HouseStatusResponse for plot owner {} leaving plot",
                         player->GetGUID().ToString());
                 }
             }

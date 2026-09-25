@@ -23,18 +23,30 @@
 #include "StringFormat.h"
 #include "UpdateData.h"
 
-HousingRoomEntity::HousingRoomEntity()
+HousingRoomEntity::HousingRoomEntity(bool exteriorRoot /*= false*/)
     : WorldObject(false)
 {
     m_objectTypeId = TYPEID_HOUSING_ENTITY; // 18 — retail objectType for housing entities
 
     m_updateFlag.HasEntityPosition = true;
-    m_updateFlag.Stationary = true;
+    m_updateFlag.Stationary = !exteriorRoot;
 
     // Object constructor adds CGObject (fragment 2) automatically. Retail room entities
     // do NOT have CGObject — sniff-verified fragment list is [21, 31, 220] only.
     // Remove it before adding our housing fragments.
     m_entityFragments.Remove(WowCS::EntityFragment::CGObject);
+
+    if (exteriorRoot)
+    {
+        // House-exterior root (retail 12.1.0.69933): an Entity with [FMirroredPositionData_C,
+        // Tag_HouseExteriorPiece, Tag_HouseExteriorRoot], no stationary position, attached to the plot room at the
+        // house offset. The base and roof meshes hang off it at local 0, and a house move only updates its
+        // PositionLocalSpace. It is a grid object so visibility delivers it together with the meshes.
+        m_entityFragments.Add(WowCS::EntityFragment::FMirroredPositionData_C, false, WowCS::GetRawFragmentData(m_mirroredPositionData));
+        m_entityFragments.Add(WowCS::EntityFragment::Tag_HouseExteriorPiece, false);
+        m_entityFragments.Add(WowCS::EntityFragment::Tag_HouseExteriorRoot, false);
+        return;
+    }
 
     m_entityFragments.Add(WowCS::EntityFragment::FHousingRoom_C, false, WowCS::GetRawFragmentData(m_housingRoomData));
     m_entityFragments.Add(WowCS::EntityFragment::FMirroredPositionData_C, false, WowCS::GetRawFragmentData(m_mirroredPositionData));

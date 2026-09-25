@@ -57,6 +57,16 @@ namespace
         float inv = 1.0f / len;
         x *= inv; y *= inv; z *= inv; w *= inv;
     }
+
+    // House type (HouseExteriorWmoData) of the component a hook hangs on, 0 if unknown.
+    uint32 GetHookOwnerWmo(uint32 hookId)
+    {
+        ExteriorComponentHookEntry const* hook = sExteriorComponentHookStore.LookupEntry(hookId);
+        if (!hook)
+            return 0;
+        ExteriorComponentEntry const* owner = sExteriorComponentStore.LookupEntry(hook->ExteriorComponentID);
+        return owner ? owner->HouseExteriorWmoDataID : 0;
+    }
 }
 
 // Global DB ID generators — initialized from MAX(id) at server startup
@@ -371,6 +381,26 @@ bool Housing::LoadFromDB(PreparedQueryResult housing, PreparedQueryResult decor,
 
         } while (fixtures->NextRow());
 
+        // A fixture of one house type on a hook of another (left by an old type switch) never spawns - its hook's
+        // root is not part of the house - yet it counted as the house's entrance, so no door was placed.
+        for (auto itr = _fixtures.begin(); itr != _fixtures.end();)
+        {
+            ExteriorComponentEntry const* comp = itr->second.OptionId ? sExteriorComponentStore.LookupEntry(itr->second.OptionId) : nullptr;
+            uint32 const hookWmo = comp ? GetHookOwnerWmo(itr->first) : 0;
+            if (comp && hookWmo && comp->HouseExteriorWmoDataID && comp->HouseExteriorWmoDataID != hookWmo)
+            {
+                TC_LOG_INFO("housing", "Housing::LoadFromDB: dropping fixture comp {} (wmo {}) on hook {} of wmo {}",
+                    itr->second.OptionId, comp->HouseExteriorWmoDataID, itr->first, hookWmo);
+                CharacterDatabasePreparedStatement* del = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHARACTER_HOUSING_FIXTURE_SINGLE);
+                del->setUInt64(0, _owner->GetGUID().GetCounter());
+                del->setUInt32(1, itr->first);
+                CharacterDatabase.Execute(del);
+                itr = _fixtures.erase(itr);
+            }
+            else
+                ++itr;
+        }
+
         // Log all loaded fixtures for debugging
         for (auto const& [pointId, fix] : _fixtures)
         {
@@ -393,13 +423,8 @@ bool Housing::LoadFromDB(PreparedQueryResult housing, PreparedQueryResult decor,
             if (comp->Type == HOUSING_FIXTURE_TYPE_BASE) hasBaseRoot = true;
             if (comp->Type == HOUSING_FIXTURE_TYPE_ROOF) hasRoofRoot = true;
         }
-        else
-        {
-            ExteriorComponentEntry const* comp = sExteriorComponentStore.LookupEntry(fix.OptionId);
-            if (comp && comp->Type == HOUSING_FIXTURE_TYPE_DOOR)
-                hasDoor = true;
-        }
     }
+    hasDoor = HasCurrentTypeDoor();
 
     if ((!hasBaseRoot || !hasRoofRoot || !hasDoor) && _houseType != 0)
     {
@@ -839,8 +864,15 @@ void Housing::CancelPendingPlacement(ObjectGuid decorGuid)
     _pendingPlacements.erase(decorGuid);
 }
 
+// HouseDecor.db2 InitialScale: the size the client previews a decor item at before the player resizes it.
+static float GetDecorInitialScale(uint32 decorEntryId)
+{
+    HouseDecorData const* decorData = sHousingMgr.GetHouseDecorData(decorEntryId);
+    return decorData && decorData->InitialScale >= 0.01f ? decorData->InitialScale : 1.0f;
+}
+
 HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntryId, float x, float y, float z,
-    float rotX, float rotY, float rotZ, float rotW, ObjectGuid roomGuid)
+    float rotX, float rotY, float rotZ, float rotW, ObjectGuid roomGuid, float scale)
 {
     if (_houseGuid.IsEmpty())
         return HOUSING_RESULT_HOUSE_NOT_FOUND;
@@ -849,9 +881,13 @@ HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntr
         !std::isfinite(rotX) || !std::isfinite(rotY) || !std::isfinite(rotZ) || !std::isfinite(rotW))
         return HOUSING_RESULT_BOUNDS_FAILURE_ROOM;
 
-    HousingResult validationResult = sHousingMgr.ValidateDecorPlacement(decorEntryId, Position(x, y, z), _level);
+    HousingResult validationResult = sHousingMgr.ValidateDecorPlacement(decorEntryId, Position(x, y, z),
+        GetDecorPlacementAnchor(roomGuid), _level);
     if (validationResult != HOUSING_RESULT_SUCCESS)
         return validationResult;
+
+    if (HousingResult boundsResult = CheckInteriorDecorBounds(roomGuid, x, y, z); boundsResult != HOUSING_RESULT_SUCCESS)
+        return boundsResult;
 
     uint32 maxDecor = GetMaxDecorCount();
     if (GetDecorCount() >= maxDecor)
@@ -942,6 +978,9 @@ HousingResult Housing::PlaceDecorWithGuid(ObjectGuid decorGuid, uint32 decorEntr
     decor.RotationY = rotY;
     decor.RotationZ = rotZ;
     decor.RotationW = rotW;
+    // The client previews and places at the scale it sends (HouseDecor InitialScale unless resized, e.g. 0.6);
+    // dropping it spawned such decor at 1.0, bigger than the preview. Same clamp as MoveDecor.
+    decor.Scale = std::isfinite(scale) && scale >= 0.01f ? std::min(scale, 5.0f) : GetDecorInitialScale(decorEntryId);
     decor.DyeSlots = {};
     decor.RoomGuid = roomGuid;
     decor.PlacementTime = GameTime::GetGameTime();
@@ -1001,9 +1040,13 @@ HousingResult Housing::PlaceDecor(uint32 decorEntryId, float x, float y, float z
         return HOUSING_RESULT_BOUNDS_FAILURE_ROOM;
 
     // Validate decor entry exists in the HousingMgr DB2 data
-    HousingResult validationResult = sHousingMgr.ValidateDecorPlacement(decorEntryId, Position(x, y, z), _level);
+    HousingResult validationResult = sHousingMgr.ValidateDecorPlacement(decorEntryId, Position(x, y, z),
+        GetDecorPlacementAnchor(roomGuid), _level);
     if (validationResult != HOUSING_RESULT_SUCCESS)
         return validationResult;
+
+    if (HousingResult boundsResult = CheckInteriorDecorBounds(roomGuid, x, y, z); boundsResult != HOUSING_RESULT_SUCCESS)
+        return boundsResult;
 
     // Check decor count limit based on house level
     uint32 maxDecor = GetMaxDecorCount();
@@ -1075,6 +1118,7 @@ HousingResult Housing::PlaceDecor(uint32 decorEntryId, float x, float y, float z
     decor.RotationY = rotY;
     decor.RotationZ = rotZ;
     decor.RotationW = rotW;
+    decor.Scale = GetDecorInitialScale(decorEntryId);
     decor.DyeSlots = {};
     decor.RoomGuid = roomGuid;
     decor.PlacementTime = GameTime::GetGameTime();
@@ -1259,9 +1303,13 @@ HousingResult Housing::MoveDecor(ObjectGuid decorGuid, float x, float y, float z
     // M1: MoveDecor previously performed NO spatial validation. Route the move
     // target through the same room/plot AABB check as placement so a moved item
     // cannot be flung to arbitrary coordinates.
-    HousingResult validationResult = sHousingMgr.ValidateDecorPlacement(itr->second.DecorEntryId, Position(x, y, z), _level);
+    HousingResult validationResult = sHousingMgr.ValidateDecorPlacement(itr->second.DecorEntryId, Position(x, y, z),
+        GetDecorPlacementAnchor(itr->second.RoomGuid), _level);
     if (validationResult != HOUSING_RESULT_SUCCESS)
         return validationResult;
+
+    if (HousingResult boundsResult = CheckInteriorDecorBounds(itr->second.RoomGuid, x, y, z); boundsResult != HOUSING_RESULT_SUCCESS)
+        return boundsResult;
 
     // A4: a moved light must also honour the "two lights cannot overlap" rule.
     // Exclude the decor being moved so an in-place nudge never collides with itself.
@@ -2005,6 +2053,74 @@ std::vector<Housing::Room const*> Housing::GetRooms() const
     return result;
 }
 
+void Housing::MoveHookFixtures(uint32 oldCompId, uint32 newCompId)
+{
+    auto const* oldHooks = sHousingMgr.GetHooksOnComponent(oldCompId);
+    auto const* newHooks = sHousingMgr.GetHooksOnComponent(newCompId);
+    if (!oldHooks || !newHooks)
+        return;
+
+    // Both roots share the house frame, so a fixture goes to the free hook of the same fixture type closest to
+    // where it hung before (hook order differs between base styles: rank matching put the door on another wall).
+    std::vector<std::pair<uint32, uint32>> moves; // old hook -> new hook
+    std::unordered_set<uint32> taken;
+    for (ExteriorComponentHookEntry const* oldHook : *oldHooks)
+    {
+        if (!oldHook || !_fixtures.count(oldHook->ID))
+            continue;
+
+        ExteriorComponentHookEntry const* best = nullptr;
+        float bestDist = std::numeric_limits<float>::max();
+        for (ExteriorComponentHookEntry const* newHook : *newHooks)
+        {
+            if (!newHook || newHook->ExteriorComponentTypeID != oldHook->ExteriorComponentTypeID || taken.count(newHook->ID))
+                continue;
+            if (newHook->ID != oldHook->ID && _fixtures.count(newHook->ID))
+                continue;
+
+            float const dx = newHook->Position[0] - oldHook->Position[0];
+            float const dy = newHook->Position[1] - oldHook->Position[1];
+            float const dz = newHook->Position[2] - oldHook->Position[2];
+            float const dist = dx * dx + dy * dy + dz * dz;
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                best = newHook;
+            }
+        }
+
+        if (!best)
+            continue;
+        taken.insert(best->ID);
+        if (best->ID != oldHook->ID)
+            moves.emplace_back(oldHook->ID, best->ID);
+    }
+
+    uint64 const ownerGuid = _owner->GetGUID().GetCounter();
+    for (auto const& [oldHookId, newHookId] : moves)
+    {
+        uint32 const optionId = _fixtures[oldHookId].OptionId;
+        _fixtures.erase(oldHookId);
+        Fixture& moved = _fixtures[newHookId];
+        moved.FixturePointId = newHookId;
+        moved.OptionId = optionId;
+
+        CharacterDatabasePreparedStatement* del = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHARACTER_HOUSING_FIXTURE_SINGLE);
+        del->setUInt64(0, ownerGuid);
+        del->setUInt32(1, oldHookId);
+        CharacterDatabase.Execute(del);
+
+        CharacterDatabasePreparedStatement* ins = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHARACTER_HOUSING_FIXTURES);
+        ins->setUInt64(0, ownerGuid);
+        ins->setUInt32(1, newHookId);
+        ins->setUInt32(2, optionId);
+        CharacterDatabase.Execute(ins);
+
+        TC_LOG_DEBUG("housing", "Housing::MoveHookFixtures: fixture comp {} moved from hook {} (comp {}) to hook {} (comp {})",
+            optionId, oldHookId, oldCompId, newHookId, newCompId);
+    }
+}
+
 HousingResult Housing::SelectFixtureOption(uint32 fixturePointId, uint32 optionId, std::vector<uint32>* removedHookIDs /*= nullptr*/)
 {
     if (_houseGuid.IsEmpty())
@@ -2029,6 +2145,14 @@ HousingResult Housing::SelectFixtureOption(uint32 fixturePointId, uint32 optionI
             return HOUSING_RESULT_FIXTURE_NOT_FOUND;
         }
 
+        // The hook must belong to the current house type (hooks are unique per root, so this also bounds the count).
+        if (!IsCurrentTypeComponent(sExteriorComponentStore.LookupEntry(hookEntry->ExteriorComponentID)))
+        {
+            TC_LOG_DEBUG("housing", "SelectFixtureOption: hook {} is on comp {}, not part of house type {}",
+                fixturePointId, hookEntry->ExteriorComponentID, _houseType);
+            return HOUSING_RESULT_FIXTURE_NOT_FOUND;
+        }
+
         // Validate component type matches hook's expected type
         if (compEntry->Type != hookEntry->ExteriorComponentTypeID)
         {
@@ -2043,9 +2167,11 @@ HousingResult Housing::SelectFixtureOption(uint32 fixturePointId, uint32 optionI
 
         if (compEntry->Type == HOUSING_FIXTURE_TYPE_DOOR)
         {
+            // Doors of other house types stay: they belong to those types' stored roots.
+            uint32 const hookWmo = GetHookOwnerWmo(fixturePointId);
             for (auto const& [pointId, fixture] : _fixtures)
             {
-                if (pointId == fixturePointId || fixture.OptionId == 0)
+                if (pointId == fixturePointId || fixture.OptionId == 0 || GetHookOwnerWmo(pointId) != hookWmo)
                     continue;
                 ExteriorComponentEntry const* existingComp = sExteriorComponentStore.LookupEntry(fixture.OptionId);
                 if (existingComp && existingComp->Type == HOUSING_FIXTURE_TYPE_DOOR)
@@ -2098,7 +2224,9 @@ HousingResult Housing::SelectFixtureOption(uint32 fixturePointId, uint32 optionI
                 if (fixture.OptionId != 0 || pointId == fixturePointId)
                     continue;
                 ExteriorComponentEntry const* oldComp = sExteriorComponentStore.LookupEntry(fixture.FixturePointId);
-                if (oldComp && oldComp->Type == newType)
+                // Roots of other house types are kept: a human base choice deleted the stored elf base, and switching
+                // back to elf fell back to the plain default base, its fixtures dragged onto human hooks.
+                if (oldComp && oldComp->Type == newType && oldComp->HouseExteriorWmoDataID == newComp->HouseExteriorWmoDataID)
                 {
                     TC_LOG_INFO("housing", "SelectFixtureOption: replacing root type {} — removing old comp {} in favor of new comp {}",
                         newType, pointId, fixturePointId);
@@ -2115,13 +2243,16 @@ HousingResult Housing::SelectFixtureOption(uint32 fixturePointId, uint32 optionI
                 CharacterDatabase.Execute(stmt);
                 if (_fixtureWeightUsed > 0)
                     --_fixtureWeightUsed;
+
+                // Fixtures (door, windows, ...) are keyed by the hooks of the component they hang on, and every
+                // root has its own hook IDs: left on the old root's hooks they vanished with it (a new base style
+                // lost its entrance). Move each to the new root's hook of the same type and rank.
+                MoveHookFixtures(oldKey, fixturePointId);
             }
         }
     }
 
     bool isNew = _fixtures.find(fixturePointId) == _fixtures.end();
-    if (isNew && _fixtures.size() >= MAX_HOUSING_FIXTURES_PER_HOUSE)
-        return HOUSING_RESULT_FIXTURE_NOT_FOUND;
 
     // Enforce fixture budget for new fixtures (WeightCost = 1 per fixture by default)
     uint32 const fixtureWeightCost = 1;
@@ -2605,6 +2736,56 @@ uint32 Housing::GetMaxFixtureBudget() const
     return sHousingMgr.GetFixtureBudgetForLevel(_level);
 }
 
+Position Housing::GetDecorPlacementAnchor(ObjectGuid roomGuid) const
+{
+    if (!IsExteriorDecorPlacement(roomGuid))
+    {
+        if (NeighborhoodMapData const* interior = sHousingMgr.GetNeighborhoodMapDataForWorldMap(HOUSE_INTERIOR_MAP_ID))
+            return Position(interior->Origin[0], interior->Origin[1], interior->Origin[2]);
+        return Position();
+    }
+
+    return _owner ? _owner->GetPosition() : Position();
+}
+
+HousingResult Housing::CheckInteriorDecorBounds(ObjectGuid roomGuid, float x, float y, float z) const
+{
+    if (IsExteriorDecorPlacement(roomGuid) || _rooms.empty())
+        return HOUSING_RESULT_SUCCESS;
+
+    NeighborhoodMapData const* interior = sHousingMgr.GetNeighborhoodMapDataForWorldMap(HOUSE_INTERIOR_MAP_ID);
+    if (!interior)
+        return HOUSING_RESULT_SUCCESS;
+
+    // Room placement as in HouseInteriorMap::SpawnRoomMeshObjects: origin + grid offset, 12 yards per floor,
+    // quarter-turn orientation. Any room counts, so an item may be moved into a neighbouring room; the
+    // tolerance covers wall decor whose origin sits on the wall plane.
+    constexpr float FLOOR_HEIGHT = 12.0f;
+    constexpr float TOLERANCE = 0.5f;
+    constexpr float QUARTER_TURN = 1.57079632679f;
+    Position const decorPos(x, y, z);
+    bool anyBounds = false;
+    for (auto const& [guid, room] : _rooms)
+    {
+        HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
+        RoomWmoDataEntry const* bounds = roomData && roomData->RoomWmoDataID
+            ? sRoomWmoDataStore.LookupEntry(roomData->RoomWmoDataID) : nullptr;
+        if (!bounds)
+            continue;
+
+        anyBounds = true;
+        Position const roomPos(interior->Origin[0] + float(room.GridX), interior->Origin[1] + float(room.GridY),
+            interior->Origin[2] + float(room.FloorIndex) * FLOOR_HEIGHT, float(room.Orientation) * QUARTER_TURN);
+        Position const local = HousingWorldToRoomLocal(roomPos, decorPos);
+        if (local.GetPositionX() >= bounds->BoundingBoxMinX - TOLERANCE && local.GetPositionX() <= bounds->BoundingBoxMaxX + TOLERANCE
+            && local.GetPositionY() >= bounds->BoundingBoxMinY - TOLERANCE && local.GetPositionY() <= bounds->BoundingBoxMaxY + TOLERANCE
+            && local.GetPositionZ() >= bounds->BoundingBoxMinZ - TOLERANCE && local.GetPositionZ() <= bounds->BoundingBoxMaxZ + TOLERANCE)
+            return HOUSING_RESULT_SUCCESS;
+    }
+
+    return anyBounds ? HOUSING_RESULT_BOUNDS_FAILURE_ROOM : HOUSING_RESULT_SUCCESS;
+}
+
 bool Housing::IsExteriorDecorPlacement(ObjectGuid roomGuid)
 {
     // No room → yard/exterior placement.
@@ -2757,78 +2938,6 @@ void Housing::PopulateCatalogStorageEntries()
         uint32(_placedDecor.size()), totalStorageItems, uint32(_catalog.size()), _owner->GetGUID().ToString());
 }
 
-// TODO housing Stage 2 (protocol migration): guarded with WorldPackets::Housing::HousingCatalogStateSync
-// (HousingPackets.h) — opcode absent in 12.1 enum: SMSG_HOUSING_CATALOG_STATE_SYNC. Currently unused
-// (no call site constructs/sends this packet), so guarding drops no live behavior.
-#if 0
-void Housing::BuildCatalogStateSync(WorldPackets::Housing::HousingCatalogStateSync& packet) const
-{
-    // Encoding reference (sniff-verified on dump_12.0.1.66838_2026-04-15):
-    //   bits 0-1 : HousingCatalogEntrySubtype
-    //              1 = Unowned, 2 = OwnedModifiedStack, 3 = OwnedUnmodifiedStack
-    //   bit  3   : 1 = Room, 0 = Decor
-    //   bit  4   : "catalog-visible" flag set on every live row in the sniff
-    // Observed packed values: 0x02, 0x03, 0x0A (room), 0x12, 0x13.
-    constexpr uint32 FLAG16 = 0x10;
-    constexpr uint32 KIND_ROOM = 0x08;
-
-    packet.Entries.clear();
-
-    // Placed decor rolls up into per-entry OwnedModifiedStack rows (an instance of the
-    // catalog item is placed in the world — the stack is in a "modified" state on the
-    // client because the player has positioned/customized it).
-    std::unordered_set<uint32> placedDecorEntries;
-    for (auto const& [decorGuid, decor] : _placedDecor)
-    {
-        if (!decor.DecorEntryId)
-            continue;
-        if (!placedDecorEntries.insert(decor.DecorEntryId).second)
-            continue;
-        WorldPackets::Housing::HousingCatalogStateSync::Entry e;
-        e.CatalogEntryID = decor.DecorEntryId;
-        e.PackedState = 2u | FLAG16; // OwnedModifiedStack + flag16
-        packet.Entries.push_back(e);
-    }
-
-    // Remaining catalog stacks (owned count beyond what is placed) are
-    // OwnedUnmodifiedStack — the storage pile the player hasn't touched.
-    for (auto const& [entryId, entry] : _catalog)
-    {
-        if (!entry.Count)
-            continue;
-
-        uint32 placedOfType = 0;
-        for (auto const& [decorGuid, decor] : _placedDecor)
-            if (decor.DecorEntryId == entryId)
-                ++placedOfType;
-
-        if (entry.Count > placedOfType)
-        {
-            WorldPackets::Housing::HousingCatalogStateSync::Entry e;
-            e.CatalogEntryID = entryId;
-            e.PackedState = 3u | FLAG16; // OwnedUnmodifiedStack + flag16
-            packet.Entries.push_back(e);
-        }
-    }
-
-    // Placed rooms map one-to-one to RoomEntryId rows with isRoom=1 / OwnedModifiedStack.
-    // The flag16 bit is clear on Room rows in the sniff (distribution 12/12), so we
-    // mirror that exactly.
-    std::unordered_set<uint32> roomEntries;
-    for (auto const& [roomGuid, room] : _rooms)
-    {
-        if (!room.RoomEntryId)
-            continue;
-        if (!roomEntries.insert(room.RoomEntryId).second)
-            continue;
-        WorldPackets::Housing::HousingCatalogStateSync::Entry e;
-        e.CatalogEntryID = room.RoomEntryId;
-        e.PackedState = 2u | KIND_ROOM; // OwnedModifiedStack + isRoom, no flag16
-        packet.Entries.push_back(e);
-    }
-}
-#endif
-
 void Housing::SaveSettings(uint32 settingsFlags)
 {
     _settingsFlags = settingsFlags;
@@ -2901,6 +3010,7 @@ void Housing::SetHouseSize(uint8 size)
 
 void Housing::SetHouseType(uint32 typeId)
 {
+    bool const changed = _houseType != typeId;
     _houseType = typeId;
 
     // Immediate persist for crash safety
@@ -2908,6 +3018,11 @@ void Housing::SetHouseType(uint32 typeId)
     stmt->setUInt32(0, typeId);
     stmt->setUInt64(1, _owner->GetGUID().GetCounter());
     CharacterDatabase.Execute(stmt);
+
+    // The previous type's roots and hook fixtures belong to other components; without starter fixtures for
+    // the new type the rebuilt house had no roof selection and no entrance.
+    if (changed)
+        PopulateStarterFixtures();
 
     SyncUpdateFields();
 
@@ -2934,6 +3049,65 @@ void Housing::SetHousePosition(float x, float y, float z, float facing)
 
     TC_LOG_DEBUG("housing", "Housing::SetHousePosition: Player {} positioned house at ({}, {}, {}, {}) in house {}",
         _owner->GetName(), x, y, z, facing, _houseGuid.ToString());
+}
+
+void Housing::ResetHousePosition()
+{
+    _hasCustomPosition = false;
+    _housePosX = _housePosY = _housePosZ = _houseFacing = 0.0f;
+
+    // All-zero coordinates load back as "no custom position" (Housing::LoadFromDB).
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHARACTER_HOUSING_POSITION);
+    stmt->setFloat(0, 0.0f);
+    stmt->setFloat(1, 0.0f);
+    stmt->setFloat(2, 0.0f);
+    stmt->setFloat(3, 0.0f);
+    stmt->setUInt64(4, _owner->GetGUID().GetCounter());
+    CharacterDatabase.Execute(stmt);
+}
+
+void Housing::RelocateExteriorDecor(Position const& fromFrame, Position const& toFrame)
+{
+    float const turn = toFrame.GetOrientation() - fromFrame.GetOrientation();
+    float const cz = std::cos(turn / 2.0f);
+    float const sz = std::sin(turn / 2.0f);
+    float const cosTo = std::cos(toFrame.GetOrientation());
+    float const sinTo = std::sin(toFrame.GetOrientation());
+
+    uint32 moved = 0;
+    for (auto& [decorGuid, decor] : _placedDecor)
+    {
+        if (!decor.RoomGuid.IsEmpty())
+            continue; // interior
+
+        Position const local = HousingWorldToRoomLocal(fromFrame, Position(decor.PosX, decor.PosY, decor.PosZ));
+        decor.PosX = toFrame.GetPositionX() + local.GetPositionX() * cosTo - local.GetPositionY() * sinTo;
+        decor.PosY = toFrame.GetPositionY() + local.GetPositionX() * sinTo + local.GetPositionY() * cosTo;
+        decor.PosZ = toFrame.GetPositionZ() + local.GetPositionZ();
+
+        // Turn the piece with the plot: q' = rotZ(turn) * q
+        float const qx = decor.RotationX, qy = decor.RotationY, qz = decor.RotationZ, qw = decor.RotationW;
+        decor.RotationX = cz * qx - sz * qy;
+        decor.RotationY = cz * qy + sz * qx;
+        decor.RotationZ = cz * qz + sz * qw;
+        decor.RotationW = cz * qw - sz * qz;
+
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHARACTER_HOUSING_DECOR_POSITION);
+        stmt->setFloat(0, decor.PosX);
+        stmt->setFloat(1, decor.PosY);
+        stmt->setFloat(2, decor.PosZ);
+        stmt->setFloat(3, decor.RotationX);
+        stmt->setFloat(4, decor.RotationY);
+        stmt->setFloat(5, decor.RotationZ);
+        stmt->setFloat(6, decor.RotationW);
+        stmt->setFloat(7, decor.Scale);
+        stmt->setUInt64(8, _owner->GetGUID().GetCounter());
+        stmt->setUInt64(9, decorGuid.GetCounter());
+        CharacterDatabase.Execute(stmt);
+        ++moved;
+    }
+
+    TC_LOG_DEBUG("housing", "Housing::RelocateExteriorDecor: moved {} exterior decor pieces for player {}", moved, _owner->GetName());
 }
 
 uint64 Housing::GenerateDecorDbId()
@@ -2980,6 +3154,47 @@ void Housing::PersistFixtureToDB(uint32 fixturePointId, uint32 optionId)
     stmt->setUInt64(1, _owner->GetGUID().GetCounter());
     stmt->setUInt32(2, fixturePointId);
     CharacterDatabase.Execute(stmt);
+}
+
+bool Housing::IsCurrentTypeComponent(ExteriorComponentEntry const* comp) const
+{
+    return comp && (_houseType == 0 || comp->HouseExteriorWmoDataID == 0
+        || comp->HouseExteriorWmoDataID == static_cast<uint32>(_houseType));
+}
+
+bool Housing::HasCurrentTypeDoor() const
+{
+    for (auto const& [pointId, fix] : _fixtures)
+    {
+        if (fix.OptionId == 0)
+            continue;
+        ExteriorComponentEntry const* comp = sExteriorComponentStore.LookupEntry(fix.OptionId);
+        if (!comp || comp->Type != HOUSING_FIXTURE_TYPE_DOOR || !IsCurrentTypeComponent(comp))
+            continue;
+
+        // The door only exists if its hook is on the current house: a stored root of this type, or a child
+        // component of this type.
+        ExteriorComponentHookEntry const* hook = sExteriorComponentHookStore.LookupEntry(pointId);
+        ExteriorComponentEntry const* owner = hook ? sExteriorComponentStore.LookupEntry(hook->ExteriorComponentID) : nullptr;
+        if (!owner || !IsCurrentTypeComponent(owner))
+            continue;
+        if (owner->Type == HOUSING_FIXTURE_TYPE_BASE || owner->Type == HOUSING_FIXTURE_TYPE_ROOF)
+        {
+            bool const rootStored = std::any_of(_fixtures.begin(), _fixtures.end(), [owner](auto const& entry)
+            {
+                if (entry.second.OptionId != 0)
+                    return false;
+                if (entry.first == owner->ID)
+                    return true;
+                ExteriorComponentEntry const* root = sExteriorComponentStore.LookupEntry(entry.first);
+                return root && static_cast<uint32>(root->ParentComponentID) == owner->ID;
+            });
+            if (!rootStored)
+                continue;
+        }
+        return true;
+    }
+    return false;
 }
 
 void Housing::PopulateStarterFixtures()
@@ -3042,21 +3257,9 @@ void Housing::PopulateStarterFixtures()
 
     // --- Starter door ---
     // Every new house starts with a door at the first door hook on the base component.
-    // Check if a door fixture already exists (any hook-based fixture with a door component).
-    bool hasDoor = false;
-    for (auto const& [pointId, fix] : _fixtures)
-    {
-        if (fix.OptionId == 0)
-            continue;
-        ExteriorComponentEntry const* comp = sExteriorComponentStore.LookupEntry(fix.OptionId);
-        if (comp && comp->Type == HOUSING_FIXTURE_TYPE_DOOR)
-        {
-            hasDoor = true;
-            break;
-        }
-    }
-
-    if (!hasDoor)
+    // Only this house type's fixtures count: fixtures of a previous type stay stored (switching back restores
+    // them) but must neither suppress the new type's door nor supply its base.
+    if (!HasCurrentTypeDoor())
     {
         // Find the base component to get its door hooks
         uint32 baseCompID = 0;
@@ -3065,7 +3268,7 @@ void Housing::PopulateStarterFixtures()
             if (fix.OptionId != 0)
                 continue;
             ExteriorComponentEntry const* comp = sExteriorComponentStore.LookupEntry(fix.FixturePointId);
-            if (comp && comp->Type == HOUSING_FIXTURE_TYPE_BASE)
+            if (comp && comp->Type == HOUSING_FIXTURE_TYPE_BASE && IsCurrentTypeComponent(comp))
             {
                 baseCompID = fix.FixturePointId;
                 break;

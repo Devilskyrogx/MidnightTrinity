@@ -479,6 +479,9 @@ class TC_GAME_API GameObject : public WorldObject, public GridObject<GameObject>
         // attachFlags: sniff-verified value = 3
         void InitHousingDecorMirroredPosition(Position const& localPos, QuaternionData const& localRot,
             float localScale, ObjectGuid attachParent, uint8 attachFlags = 3);
+        // Moves decor already carrying FMirroredPositionData_C (the local transform is what the client renders).
+        void UpdateHousingDecorMirroredTransform(Position const& localPos, QuaternionData const& localRot, float localScale);
+        ObjectGuid GetHousingDecorAttachParent() const { return m_mirroredPositionData->PositionData->AttachParentGUID; }
 
         UF::UpdateField<UF::MirroredPositionData, int32(WowCS::EntityFragment::FMirroredPositionData_C), 0> m_mirroredPositionData;
 

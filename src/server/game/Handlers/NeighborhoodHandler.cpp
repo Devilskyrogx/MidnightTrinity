@@ -1398,7 +1398,7 @@ void WorldSession::HandleNeighborhoodBuyHouse(WorldPackets::Neighborhood::Neighb
             response.House.OwnerGUID = player->GetGUID();
             response.House.NeighborhoodGUID = neighborhood->GetGuid();
             response.House.PlotIndex = resolvedPlotIndex;
-            response.House.HouseLevel = static_cast<uint8>(h->GetLevel()); // JamCliHouse carries level, not settings flags (RE 0x5c0005)
+            response.House.HouseSettingFlags = h->GetSettingsFlags();
         }
         WorldPacket const* buyRespPkt = response.Write();
         SendPacket(buyRespPkt);
@@ -1451,7 +1451,8 @@ void WorldSession::HandleNeighborhoodBuyHouse(WorldPackets::Neighborhood::Neighb
                 WorldPackets::Housing::HousingSvcsGuildAddHouseNotification notification;
                 notification.House.HouseGUID = housing->GetHouseGuid();
                 notification.House.OwnerGUID = player->GetGUID();
-                notification.House.HouseLevel = static_cast<uint8>(housing->GetLevel());
+                notification.House.PlotIndex = housing->GetPlotIndex();
+                notification.House.HouseSettingFlags = housing->GetSettingsFlags();
                 guild->BroadcastPacket(notification.Write());
             }
         }
@@ -1465,9 +1466,19 @@ void WorldSession::HandleNeighborhoodBuyHouse(WorldPackets::Neighborhood::Neighb
             Housing const* buyHousing = player->GetHousing();
             int32 buyExtCompID = buyHousing ? static_cast<int32>(buyHousing->GetCoreExteriorComponentID()) : 0;
             int32 buyWmoDataID = buyHousing ? static_cast<int32>(buyHousing->GetHouseType()) : 0;
-            TC_LOG_ERROR("housing", "HandleNeighborhoodBuyHouse: Calling SpawnHouseForPlot for plot {} (extComp={}, wmoData={})",
-                resolvedPlotIndex, buyExtCompID, buyWmoDataID);
-            GameObject* houseGo = housingMap->SpawnHouseForPlot(resolvedPlotIndex, nullptr, buyExtCompID, buyWmoDataID);
+            // Same fixture/root selections HousingMap::AddPlayerToMap spawns with - without them the
+            // fixtures Housing::Create just gave the house (porch etc.) only appeared after a relog.
+            HousingMap::FixtureOverrideMap buyFixtureOverrides;
+            HousingMap::RootOverrideMap buyRootOverrides;
+            if (buyHousing)
+            {
+                buyFixtureOverrides = buyHousing->GetFixtureOverrideMap();
+                buyRootOverrides = buyHousing->GetRootComponentOverrides();
+            }
+            TC_LOG_ERROR("housing", "HandleNeighborhoodBuyHouse: Calling SpawnHouseForPlot for plot {} (extComp={}, wmoData={}, fixtures={})",
+                resolvedPlotIndex, buyExtCompID, buyWmoDataID, uint32(buyFixtureOverrides.size()));
+            GameObject* houseGo = housingMap->SpawnHouseForPlot(resolvedPlotIndex, nullptr, buyExtCompID, buyWmoDataID,
+                buyFixtureOverrides.empty() ? nullptr : &buyFixtureOverrides, &buyRootOverrides);
             TC_LOG_ERROR("housing", "HandleNeighborhoodBuyHouse: SpawnHouseForPlot result: {}",
                 houseGo ? houseGo->GetGUID().ToString() : "FAILED/NULL");
 
@@ -1546,6 +1557,9 @@ void WorldSession::HandleNeighborhoodBuyHouse(WorldPackets::Neighborhood::Neighb
         TC_LOG_ERROR("housing", "Player {} purchased plot {} in neighborhood '{}'",
             player->GetGUID().ToString(), resolvedPlotIndex,
             neighborhood->GetName());
+
+        // Move-in cutscene and tutorial credit, as retail does after a purchase or a move.
+        player->CastSpell(player, SPELL_HOUSING_HOUSE_ACQUIRED, true);
 
         // Check if neighborhoods need expansion after plot purchase
         sNeighborhoodMgr.CheckAndExpandNeighborhoods();
@@ -1670,6 +1684,9 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
         if (Housing* housing = player->GetHousing())
         {
             housing->SetPlotIndex(targetPlotIndex);
+            // A position chosen on the old plot means nothing on the new one; left set, every later rebuild or
+            // re-entry put the house back at the old plot's coordinates.
+            housing->ResetHousePosition();
             housing->SyncUpdateFields();
             // Push the Housing/3 entity (HousingPlayerHouseEntity) to the client
             // as CREATE — the regular world-map plot icon resolves via entity
@@ -1686,6 +1703,13 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
         // Despawn entities at old plot, respawn at new plot
         if (HousingMap* housingMap = dynamic_cast<HousingMap*>(player->GetMap()))
         {
+            // The yard decor moves with the house, keeping its place on the plot.
+            Position fromFrame, toFrame;
+            if (Housing* movedHousing = player->GetHousing())
+                if (oldPlotIndex != INVALID_PLOT_INDEX && housingMap->GetPlotRoomFrame(oldPlotIndex, fromFrame)
+                    && housingMap->GetPlotRoomFrame(targetPlotIndex, toFrame))
+                    movedHousing->RelocateExteriorDecor(fromFrame, toFrame);
+
             if (oldPlotIndex != INVALID_PLOT_INDEX)
             {
                 housingMap->DespawnAllDecorForPlot(oldPlotIndex);
@@ -1723,7 +1747,7 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
             response.House.OwnerGUID = player->GetGUID();
             response.House.NeighborhoodGUID = housing->GetNeighborhoodGuid();
             response.House.PlotIndex = housing->GetPlotIndex();
-            response.House.HouseLevel = static_cast<uint8>(housing->GetLevel()); // JamCliHouse carries level, not settings flags (RE 0x5c0006)
+            response.House.HouseSettingFlags = housing->GetSettingsFlags();
         }
 
         // The house moved to another plot: the other members' rosters need the new plot.
@@ -1738,6 +1762,10 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
     // response with its locally-tracked move-in-progress entry.
     response.MoveTransactionGuid = housing->GetHouseGuid();
     SendPacket(response.Write());
+
+    // Move-in cutscene and tutorial credit (retail casts this right after the response).
+    if (result == HOUSING_RESULT_SUCCESS)
+        player->CastSpell(player, SPELL_HOUSING_HOUSE_ACQUIRED, true);
 
     TC_LOG_DEBUG("housing", "MoveHouse result: {} from plot {} to plot {} via cornerstone {}",
         uint32(result), oldPlotIndex, targetPlotIndex,
@@ -1920,7 +1948,7 @@ void WorldSession::HandleNeighborhoodOpenCornerstoneUI(WorldPackets::Neighborhoo
             existingHouse.OwnerGUID = player->GetGUID();
             existingHouse.NeighborhoodGUID = myHousing->GetNeighborhoodGuid();
             existingHouse.PlotIndex = myHousing->GetPlotIndex();
-            existingHouse.HouseLevel = static_cast<uint8>(myHousing->GetLevel());
+            existingHouse.HouseSettingFlags = myHousing->GetSettingsFlags();
             existingHouse.HasOptionalField = false;
             response.ExistingHouse = std::move(existingHouse);
         }
@@ -2332,41 +2360,6 @@ void WorldSession::HandleGetInitiativeActivityLogRequest(WorldPackets::Neighborh
         getInitiativeActivityLogRequest.NeighborhoodGuid.ToString(), player->GetGUID().ToString());
 }
 
-// TODO housing Stage 2 (protocol migration): guarded with WorldPackets::Neighborhood::GetNeighborhoodInitiativeInfoRequest
-// (HousingPackets.h) — opcode absent in 12.1 enum: CMSG_GET_NEIGHBORHOOD_INITIATIVE_INFO_REQUEST.
-#if 0
-void WorldSession::HandleGetNeighborhoodInitiativeInfoRequest(WorldPackets::Neighborhood::GetNeighborhoodInitiativeInfoRequest const& getNeighborhoodInitiativeInfoRequest)
-{
-    // 12.0.5 sniff-verified opcode 0x380003. Lua entry point:
-    // C_NeighborhoodInitiative.RequestNeighborhoodInitiativeInfo(neighborhoodGUID).
-    // Always paired with CMSG_GET_INITIATIVE_ACTIVITY_LOG_REQUEST in the captured
-    // traffic — both fired when the player opens the neighborhood initiative panel.
-    // The 0x380002 request also returns initiative info but for the `Available`
-    // panel; this 0x380003 path corresponds to the active/current initiative view.
-    // Reuse SendPlayerInitiativeInfo, which serialises the current cycle, milestone,
-    // remaining duration and player tasks via SMSG_GET_PLAYER_INITIATIVE_INFO_RESULT
-    // (0x420368) — that same SMSG is consumed by the client for both panels.
-    Player* player = GetPlayer();
-    if (!player)
-        return;
-
-    Neighborhood* neighborhood = sNeighborhoodMgr.ResolveNeighborhood(getNeighborhoodInitiativeInfoRequest.NeighborhoodGuid, player);
-    if (!neighborhood)
-    {
-        TC_LOG_DEBUG("housing", "CMSG_GET_NEIGHBORHOOD_INITIATIVE_INFO_REQUEST NeighborhoodGuid {} not resolvable for Player: {}",
-            getNeighborhoodInitiativeInfoRequest.NeighborhoodGuid.ToString(), player->GetGUID().ToString());
-        return;
-    }
-
-    ObjectGuid nhObjGuid = neighborhood->GetGuid();
-    uint64 nhGuid = nhObjGuid.GetCounter();
-    sInitiativeManager.SendPlayerInitiativeInfo(this, nhObjGuid, nhGuid);
-
-    TC_LOG_DEBUG("housing", "CMSG_GET_NEIGHBORHOOD_INITIATIVE_INFO_REQUEST NeighborhoodGuid: {}, Player: {}",
-        getNeighborhoodInitiativeInfoRequest.NeighborhoodGuid.ToString(), player->GetGUID().ToString());
-}
-#endif
-
 void WorldSession::HandleInitiativeUpdateActiveNeighborhood(WorldPackets::Neighborhood::InitiativeUpdateActiveNeighborhood const& initiativeUpdateActiveNeighborhood)
 {
     Player* player = GetPlayer();
@@ -2396,139 +2389,6 @@ void WorldSession::HandleInitiativeUpdateActiveNeighborhood(WorldPackets::Neighb
     TC_LOG_DEBUG("housing", "SMSG_INITIATIVE_SERVICE_STATUS + SMSG_GET_PLAYER_INITIATIVE_INFO_RESULT sent for NeighborhoodGuid: {}",
         initiativeUpdateActiveNeighborhood.NeighborhoodGuid.ToString());
 }
-
-// ============================================================================
-// 0x38xxxx NeighborhoodInitiative — generic Op-XX handlers
-// ============================================================================
-//
-// These 12 opcodes are sent by the client per IDA-decoded wire formats
-// (INITIATIVE_WIRE_FORMAT_AUTHORITATIVE_67186.md). Their 1:1 Lua API binding
-// requires runtime sniff data — vtable indirection in the client (hash
-// 0xBA8F5C5BC59E8E8E = INITIATIVE_TASKS_TRACKED_LIST_CHANGED) prevents static
-// resolution. Per the doc:
-//   - 0x380001, 0x38000C: candidates for SetActiveNeighborhood / SetViewingNeighborhood
-//   - 0x380007, 0x38000A, 0x38000B: candidates for AddTrackedInitiativeTask /
-//     RemoveTrackedInitiativeTask (uint32 taskID); the doc indicates the user-callable
-//     APIs flush via the BATCH path 0x38000E rather than these direct uint32 senders.
-//   - 0x380006, 0x380008: empty-payload candidates for RequestInitiativeActivityLog /
-//     RequestNeighborhoodInitiativeInfo (the dedicated 0x380003/0x380004 opcodes also
-//     match those Lua APIs — multiple paths exist).
-//   - 0x380005: uint32+GUID, possibly task-state mutation tied to a neighborhood
-//   - 0x380009: float, debug or rate-progress sender
-//   - 0x38000D: pair-array progress submission with bit flag
-//   - 0x38000E: bulk uint32 array (likely tracked-task ID list flush)
-//   - 0x38000F: bulk quad-int records (likely milestone/claim batch)
-//
-// Until sniff data confirms exact semantics, each handler:
-//   - parses the wire format successfully (doesn't error/disconnect)
-//   - logs the request for diagnostic capture
-//   - returns silently (no SMSG response)
-// This matches how the client's other "fire-and-forget" senders behave in retail.
-//
-// TODO housing Stage 2 (protocol migration): guarded with the 12 NeighborhoodInitiativeOpXX
-// classes (HousingPackets.h) — none of the CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_* placeholder
-// opcodes exist in bare's 12.1 Opcodes.h; guessing renumbered values would fabricate wire opcodes.
-#if 0
-void WorldSession::HandleNeighborhoodInitiativeOp01(WorldPackets::Neighborhood::NeighborhoodInitiativeOp01 const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_01 NeighborhoodGuid: {} (player: {})",
-        packet.NeighborhoodGuid.ToString(), GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp05(WorldPackets::Neighborhood::NeighborhoodInitiativeOp05 const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_05 Field1: {} NeighborhoodGuid: {} (player: {})",
-        packet.Field1, packet.NeighborhoodGuid.ToString(), GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp06(WorldPackets::Neighborhood::NeighborhoodInitiativeOp06 const& /*packet*/)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_06 (player: {})", GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp07(WorldPackets::Neighborhood::NeighborhoodInitiativeOp07 const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_07 Value: {} (player: {})",
-        packet.Value, GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp08(WorldPackets::Neighborhood::NeighborhoodInitiativeOp08 const& /*packet*/)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_08 (player: {})", GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp09(WorldPackets::Neighborhood::NeighborhoodInitiativeOp09 const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_09 Value: {} (player: {})",
-        packet.Value, GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp0A(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0A const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_0A Value: {} (player: {})",
-        packet.Value, GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp0B(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0B const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_0B Value: {} (player: {})",
-        packet.Value, GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp0C(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0C const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_0C NeighborhoodGuid: {} (player: {})",
-        packet.NeighborhoodGuid.ToString(), GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp0D(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0D const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_0D Header: {} Pairs: {} Flag: {} (player: {})",
-        packet.Header, uint32(packet.Pairs.size()), packet.Flag, GetPlayer()->GetGUID().ToString());
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp0E(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0E const& packet)
-{
-    if (!GetPlayer())
-        return;
-    // Per the IDA doc this is the bulk-flush path for tracked-task list mutations.
-    // Persist the new tracked-task list into the player's initiative state.
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_0E TaskIDs[{}] (player: {})",
-        uint32(packet.TaskIDs.size()), GetPlayer()->GetGUID().ToString());
-    for (uint32 id : packet.TaskIDs)
-        TC_LOG_TRACE("housing", "  task: {}", id);
-}
-
-void WorldSession::HandleNeighborhoodInitiativeOp0F(WorldPackets::Neighborhood::NeighborhoodInitiativeOp0F const& packet)
-{
-    if (!GetPlayer())
-        return;
-    TC_LOG_DEBUG("housing", "CMSG_NEIGHBORHOOD_INITIATIVE_OPCODE_0F Records[{}] (player: {})",
-        uint32(packet.Records.size()), GetPlayer()->GetGUID().ToString());
-    for (auto const& r : packet.Records)
-        TC_LOG_TRACE("housing", "  record: ({}, {}, {}, {})", r.A, r.B, r.C, r.D);
-}
-#endif
 
 // ============================================================
 // Phase 7 — Charter Handlers

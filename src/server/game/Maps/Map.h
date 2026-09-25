@@ -748,6 +748,8 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
         size_t DespawnAll(SpawnObjectType type, ObjectGuid::LowType spawnId);
 
         bool ShouldBeSpawnedOnGridLoad(SpawnObjectType type, ObjectGuid::LowType spawnId) const;
+        // Lets a map type keep DB spawns out of the world (housing: the ground cover of an owned plot).
+        virtual bool IsSpawnSuppressed(SpawnObjectType /*type*/, ObjectGuid::LowType /*spawnId*/) const { return false; }
         template <typename T> bool ShouldBeSpawnedOnGridLoad(ObjectGuid::LowType spawnId) const { return ShouldBeSpawnedOnGridLoad(SpawnData::TypeFor<T>, spawnId); }
 
         SpawnGroupTemplateData const* GetSpawnGroupData(uint32 groupId) const;
