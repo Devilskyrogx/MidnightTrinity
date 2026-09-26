@@ -452,7 +452,7 @@ Neighborhood* NeighborhoodMgr::FindOrCreatePublicNeighborhood(uint32 teamId)
         TC_LOG_ERROR("housing",
             "FindOrCreatePublicNeighborhood: HOUSING LOCKOUT for {} — NeighborhoodMap has no system-generatable "
             "row (Flags bit 0x4) carrying the {} flag (0x{:X}). Players of this faction cannot enter housing. "
-            "Apply the neighborhood_map hotfix (sql/housing/hotfixes_housing.sql): "
+            "Check NeighborhoodMap.db2 in the extracted client data: "
             "Alliance = ID 1 / MapID 2735 / FactionRestriction 5 (0x1|0x4), "
             "Horde = ID 2 / MapID 2736 / FactionRestriction 6 (0x2|0x4).",
             factionName, factionName, wantBit);
@@ -632,13 +632,13 @@ void NeighborhoodMgr::EnsurePublicNeighborhoods()
         TC_LOG_ERROR("server.loading",
             ">> HOUSING LOCKOUT: no public Alliance neighborhood exists and none could be created. "
             "NeighborhoodMap has no system-generatable map with the Alliance flag (0x1|0x4). "
-            "Apply the neighborhood_map hotfix (sql/housing/hotfixes_housing.sql): "
+            "Check NeighborhoodMap.db2 in the extracted client data: "
             "ID 1 must be MapID 2735 with FactionRestriction 5 (0x1 Alliance | 0x4 SystemGenerate).");
     if (!hasHordePublic)
         TC_LOG_ERROR("server.loading",
             ">> HOUSING LOCKOUT: no public Horde neighborhood exists and none could be created. "
             "NeighborhoodMap has no system-generatable map with the Horde flag (0x2|0x4). "
-            "Apply the neighborhood_map hotfix (sql/housing/hotfixes_housing.sql): "
+            "Check NeighborhoodMap.db2 in the extracted client data: "
             "ID 2 must be MapID 2736 with FactionRestriction 6 (0x2 Horde | 0x4 SystemGenerate).");
 }
 

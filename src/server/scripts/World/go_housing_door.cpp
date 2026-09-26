@@ -86,27 +86,26 @@ static void TeleportOutOfHouseInterior(Player* player, HouseInteriorMap* interio
         }
     }
 
-    uint32 destMapId = nbh ? sHousingMgr.GetWorldMapIdByNeighborhoodMapId(nbh->GetNeighborhoodMapID()) : 2735;
-    if (destMapId == 0)
-        destMapId = 2735;
+    // The neighborhood's world map and the plot's TeleportPosition, both from DB2 (NeighborhoodMap / NeighborhoodPlot).
+    // Without them there is no plot to return to: send the player home instead of to made-up coordinates.
+    uint32 destMapId = nbh ? sHousingMgr.GetWorldMapIdByNeighborhoodMapId(nbh->GetNeighborhoodMapID()) : 0;
+    NeighborhoodPlotData const* exitPlot = nullptr;
+    if (nbh)
+        for (NeighborhoodPlotData const* plot : sHousingMgr.GetPlotsForMap(nbh->GetNeighborhoodMapID()))
+            if (plot->PlotIndex == static_cast<int32>(ownerPlotIndex))
+                exitPlot = plot;
 
-    // Use TeleportPosition (the safe player spawn point above ground),
-    // NOT HousePosition — HousePosition is where the house WMO root
-    // sits, which is often at ground level or below, so teleporting
-    // there drops the player under the map.
-    uint32 nbhMapId = nbh ? nbh->GetNeighborhoodMapID() : 2;
-    std::vector<NeighborhoodPlotData const*> plots = sHousingMgr.GetPlotsForMap(nbhMapId);
-    float exitX = 0, exitY = 0, exitZ = 0;
-    for (NeighborhoodPlotData const* plot : plots)
+    if (!destMapId || !exitPlot)
     {
-        if (plot->PlotIndex == static_cast<int32>(ownerPlotIndex))
-        {
-            exitX = plot->TeleportPosition[0];
-            exitY = plot->TeleportPosition[1];
-            exitZ = plot->TeleportPosition[2];
-            break;
-        }
+        TC_LOG_ERROR("housing", "go_housing_door: no neighborhood/plot to leave {} to (owner {}) - sending the player home",
+            player->GetGUID().ToString(), houseOwner.ToString());
+        player->TeleportTo(player->m_homebind);
+        return;
     }
+
+    float exitX = exitPlot->TeleportPosition[0];
+    float exitY = exitPlot->TeleportPosition[1];
+    float exitZ = exitPlot->TeleportPosition[2];
 
     TC_LOG_DEBUG("housing", "go_housing_door: Teleporting {} from interior (owner {}) to map {} plot {} at ({:.1f},{:.1f},{:.1f})",
         player->GetGUID().ToString(), houseOwner.ToString(), destMapId, ownerPlotIndex, exitX, exitY, exitZ);
@@ -293,8 +292,36 @@ class spell_housing_leave_house : public SpellScript
     }
 };
 
+// 1233637 - Teleport Home
+// 1265142 - Visit House
+class spell_housing_plot_teleport : public SpellScript
+{
+    // The plot to land on is chosen when the cast starts (HousingHandler: CMSG_HOUSING_SVCS_TELEPORT_TO_PLOT, the house
+    // finder's reservation). It lies on another map, so it cannot be an explicit cast target - CheckCast would refuse it
+    // as out of the spell's self range - and joins the teleport effect only now, after the cast bar.
+    void SetPlotDestination(SpellEffIndex effIndex)
+    {
+        Optional<WorldLocation> dest = sHousingMgr.TakePendingPlotTeleport(GetCaster()->GetGUID());
+        if (!dest)
+        {
+            PreventHitDefaultEffect(effIndex);
+            return;
+        }
+
+        GetSpell()->m_targets.SetDst(dest->GetPositionX(), dest->GetPositionY(), dest->GetPositionZ(), dest->GetOrientation(), dest->GetMapId());
+        if (WorldLocation* hitDest = GetHitDest())
+            *hitDest = *dest;
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_housing_plot_teleport::SetPlotDestination, EFFECT_ALL, SPELL_EFFECT_TELEPORT_UNITS);
+    }
+};
+
 void AddSC_go_housing_door()
 {
     new go_housing_door();
     RegisterSpellScript(spell_housing_leave_house);
+    RegisterSpellScript(spell_housing_plot_teleport);
 }

@@ -1016,8 +1016,9 @@ void HouseInteriorMap::SpawnInteriorDecorFromList(std::vector<Housing::PlacedDec
             continue;
         }
 
+        // HouseDecor.ModelType 2 = WMO (interior walls, pillars, doorways); sent as an M2 the client crashes loading it.
         MeshObject* mesh = MeshObject::CreateMeshObject(this, localPos, rot, decorScale,
-            fileDataID, /*isWMO*/ false, roomEntityGuid, attachFlags, &worldPos);
+            fileDataID, /*isWMO*/ decorData->ModelType == HOUSE_DECOR_MODEL_TYPE_WMO, roomEntityGuid, attachFlags, &worldPos);
 
         if (!mesh)
         {
@@ -1184,8 +1185,9 @@ void HouseInteriorMap::SpawnSingleInteriorDecor(Housing::PlacedDecor const& deco
     if (fileDataID <= 0)
         return;
 
+    // HouseDecor.ModelType 2 = WMO (interior walls, pillars, doorways); sent as an M2 the client crashes loading it.
     MeshObject* mesh = MeshObject::CreateMeshObject(this, localPos, rot, decorScale,
-        fileDataID, /*isWMO*/ false, roomEntityGuid, attachFlags, &worldPos);
+        fileDataID, /*isWMO*/ decorData->ModelType == HOUSE_DECOR_MODEL_TYPE_WMO, roomEntityGuid, attachFlags, &worldPos);
 
     if (!mesh)
         return;

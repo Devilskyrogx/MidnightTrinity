@@ -257,6 +257,9 @@ public:
     // character_housing_rooms.doorTypes: "componentId:variant,componentId:variant"
     static std::string SerializeDoorTypes(Room const& room);
     static void LoadDoorTypes(Room& room, std::string const& doorTypes);
+    /// Housing/3 house GUID (12.1.0.69933 sniff): arg1 = the neighborhood's NeighborhoodMapID, arg2 = 7, low = the
+    /// Battle.net account. One account's Alliance and Horde houses differ only in arg1 (0x...8007 / 0x...10007).
+    static ObjectGuid MakeHouseGuid(uint32 neighborhoodMapId, uint32 bnetAccountId);
     static std::string SerializeComponentStyles(Room const& room);
     static void LoadComponentStyles(Room& room, std::string const& componentStyles);
 

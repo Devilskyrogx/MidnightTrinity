@@ -374,15 +374,15 @@ void HousingMap::SpawnPlotGameObjects()
     for (NeighborhoodPlotData const* plot : plots)
     {
         uint8 plotIdx = static_cast<uint8>(plot->PlotIndex);
-        // Prefer the DB2 WorldState ID when present; otherwise synthesise one
-        // (DB2 extraction currently has this column zero for all plots).
-        uint32 wsId = plot->WorldState != 0 ? plot->WorldState
-                        : MakeHousingPlotWorldStateId(neighborhoodMapId, plotIdx);
+        // NeighborhoodPlot.WorldState (set on every plot of the 12.1.0.69933 DB2)
+        uint32 wsId = plot->WorldState;
+        if (!wsId)
+            continue;
         Neighborhood::PlotInfo const* pi = _neighborhood->GetPlotInfo(plotIdx);
         bool occupied = pi && pi->IsOccupied() && !pi->HouseGuid.IsEmpty();
         SetWorldStateValue(wsId, occupied ? 1 : 0, /*hidden*/ false);
-        TC_LOG_INFO("housing", "  PlotWS[{}] WorldState={}{} value={} (owner={} house={})",
-            plot->PlotIndex, wsId, plot->WorldState == 0 ? " [synth]" : "",
+        TC_LOG_INFO("housing", "  PlotWS[{}] WorldState={} value={} (owner={} house={})",
+            plot->PlotIndex, wsId,
             occupied ? 1 : 0,
             pi ? pi->OwnerGuid.ToString() : "n/a",
             pi ? pi->HouseGuid.ToString() : "n/a");
@@ -857,18 +857,18 @@ void HousingMap::SetPlotOwnershipState(uint8 plotIndex, bool owned)
 
         SetPlotGroundCleared(plotData, owned);
 
-        // Prefer the DB2 WorldState ID; synthesise one when the extraction has it zero.
-        uint32 wsId = plotData->WorldState != 0 ? plotData->WorldState
-                        : MakeHousingPlotWorldStateId(neighborhoodMapId, plotIndex);
+        // NeighborhoodPlot.WorldState (set on every plot of the 12.1.0.69933 DB2)
+        uint32 wsId = plotData->WorldState;
 
         // Blizzlike: the per-plot WorldState is a BINARY occupancy flag — 0 empty,
         // 1 occupied. `Map::SetWorldStateValue` stores the value (so future joins
         // get it in INIT_WORLD_STATES) AND broadcasts `SMSG_UPDATE_WORLD_STATE` to
         // every player currently on the map. No per-player enum override.
-        SetWorldStateValue(wsId, owned ? 1 : 0, /*hidden*/ false);
+        if (wsId)
+            SetWorldStateValue(wsId, owned ? 1 : 0, /*hidden*/ false);
 
-        TC_LOG_DEBUG("housing", "SetPlotOwnershipState: ws={}{} value={} plot={} {} neighborhoodMap={}",
-            wsId, plotData->WorldState == 0 ? " [synth]" : "",
+        TC_LOG_DEBUG("housing", "SetPlotOwnershipState: ws={} value={} plot={} {} neighborhoodMap={}",
+            wsId,
             owned ? 1 : 0, plotIndex, owned ? "occupied" : "empty", neighborhoodMapId);
         break;
     }
@@ -2107,21 +2107,8 @@ GameObject* HousingMap::SpawnHouseForPlot(uint8 plotIndex, Position const* custo
         }
     };
 
-    // House position: DB2 HousePosition facing the cornerstone, or where the owner moved it.
-    float houseFacing;
-    {
-        // DB2 HouseRotation is (0,0,0) for all plots — compute facing so the
-        // entrance points toward the cornerstone (the plot's interaction point).
-        float hRotX = targetPlot->HouseRotation[0];
-        float hRotY = targetPlot->HouseRotation[1];
-        float hRotZ = targetPlot->HouseRotation[2];
-        if (hRotX == 0.0f && hRotY == 0.0f && hRotZ == 0.0f)
-            houseFacing = std::atan2(targetPlot->CornerstonePosition[1] - targetPlot->HousePosition[1],
-                targetPlot->CornerstonePosition[0] - targetPlot->HousePosition[0]);
-        else
-            houseFacing = hRotZ;
-    }
-    Position housePosition(targetPlot->HousePosition[0], targetPlot->HousePosition[1], targetPlot->HousePosition[2], houseFacing);
+    // House position: the plot's default spot (HousingMgr::GetDefaultHousePosition), or where the owner moved it.
+    Position housePosition = sHousingMgr.GetDefaultHousePosition(*targetPlot);
     // Where the owner put the house the client already chose the height: retail keeps it verbatim (12.1.0.69933 sniff,
     // root Entity PositionLocalSpace.Z == the Z of CMSG_HOUSE_EXTERIOR_SET_HOUSE_POSITION). Snapping it to the terrain
     // under the house centre sank houses on slopes, door and all. Only the DB2 default spot is put on the ground.
@@ -2131,15 +2118,8 @@ GameObject* HousingMap::SpawnHouseForPlot(uint8 plotIndex, Position const* custo
         groundClamp(housePosition);
 
     // Plot room (the plot geobox the house and yard decor hang off): retail places it exactly on the plot's
-    // PlotGameObjectID row of GameObjects.db2, turned half a revolution (captured plots 7 and 9 match to the
-    // centimetre). Without that row, fall back to the house's DB2 position.
-    Position plotPos(targetPlot->HousePosition[0], targetPlot->HousePosition[1], targetPlot->HousePosition[2], houseFacing);
-    if (GameObjectsEntry const* plotGo = sGameObjectsStore.LookupEntry(targetPlot->PlotGameObjectID))
-    {
-        float goYaw = 0.0f, unusedY = 0.0f, unusedX = 0.0f;
-        QuaternionData(plotGo->Rot[0], plotGo->Rot[1], plotGo->Rot[2], plotGo->Rot[3]).toEulerAnglesZYX(goYaw, unusedY, unusedX);
-        plotPos.Relocate(plotGo->Pos.X, plotGo->Pos.Y, plotGo->Pos.Z, Position::NormalizeOrientation(goYaw + float(M_PI)));
-    }
+    // PlotGameObjectID row of GameObjects.db2, turned half a revolution (every plot room of the 12.1.0.69933 sniffs).
+    Position plotPos = sHousingMgr.GetDefaultHousePosition(*targetPlot);
     LoadGrid(plotPos.GetPositionX(), plotPos.GetPositionY());
 
     float x = housePosition.GetPositionX();
@@ -3697,7 +3677,7 @@ bool HousingMap::SpawnDecorItem(uint8 plotIndex, Housing::PlacedDecor const& dec
     }
 
     MeshObject* mesh = MeshObject::CreateMeshObject(this, localPos, rot, decorScale,
-        fileDataID, /*isWMO*/ false, roomEntityGuid, attachFlags, &worldPos);
+        fileDataID, /*isWMO*/ decorData->ModelType == HOUSE_DECOR_MODEL_TYPE_WMO, roomEntityGuid, attachFlags, &worldPos);
 
     if (!mesh)
     {

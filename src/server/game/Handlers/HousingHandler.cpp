@@ -269,6 +269,20 @@ namespace
             spellId, auraSlot, castId.ToString());
     }
 
+    // Retail (12.1.0.69933 sniff 19-48-29) sends the player to a plot through a 10 s cast of a teleport spell; the spell
+    // script (spell_housing_plot_teleport) gives its teleport effect this destination once the cast bar is done.
+    void StartHousingPlotTeleport(Player* player, uint32 spellId, WorldLocation const& dest)
+    {
+        if (!sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE))
+        {
+            player->TeleportTo(dest);
+            return;
+        }
+
+        sHousingMgr.SetPendingPlotTeleport(player->GetGUID(), dest);
+        player->CastSpell(player, spellId, CastSpellExtraArgs());
+    }
+
     // Refreshes all room MeshObjects in the player's interior instance after a room
     // data change (add, remove, rotate, move, theme, material, door, ceiling).
     void RefreshInteriorRoomVisuals(Player* player, Housing* housing)
@@ -585,12 +599,14 @@ void WorldSession::LeaveHouseInterior()
         }
     }
 
-    // Last resort fallback
+    // No neighborhood to return to (the world map comes from NeighborhoodMap.db2): send the player home rather than to
+    // the Alliance map on whatever coordinates follow.
     if (worldMapId == 0)
     {
-        worldMapId = 2735; // Alliance Founder's Point default
-        TC_LOG_ERROR("housing", "CMSG_HOUSE_INTERIOR_LEAVE_HOUSE: Could not resolve neighborhood world map, "
-            "falling back to {}", worldMapId);
+        TC_LOG_ERROR("housing", "CMSG_HOUSE_INTERIOR_LEAVE_HOUSE: Could not resolve neighborhood world map for {} - sending the player home",
+            player->GetGUID().ToString());
+        player->TeleportTo(player->m_homebind);
+        return;
     }
 
     // Resolve the NeighborhoodMapId for the world map to look up plot data
@@ -610,14 +626,12 @@ void WorldSession::LeaveHouseInterior()
             if (plot->PlotIndex != static_cast<int32>(plotIndex))
                 continue;
 
-            float hx = plot->HousePosition[0];
-            float hy = plot->HousePosition[1];
-            float hz = plot->HousePosition[2];
-
-            // Compute house facing (same as SpawnHouseForPlot)
-            float hFacing = plot->HouseRotation[2];
-            if (plot->HouseRotation[0] == 0.0f && plot->HouseRotation[1] == 0.0f && plot->HouseRotation[2] == 0.0f)
-                hFacing = std::atan2(plot->CornerstonePosition[1] - hy, plot->CornerstonePosition[0] - hx);
+            // The house's default spot (same as SpawnHouseForPlot)
+            Position const defaultSpot = sHousingMgr.GetDefaultHousePosition(*plot);
+            float hx = defaultSpot.GetPositionX();
+            float hy = defaultSpot.GetPositionY();
+            float hz = defaultSpot.GetPositionZ();
+            float hFacing = defaultSpot.GetOrientation();
 
             // Find the door hook + exit point from the fixture overrides of the house
             // being left. Without an exitHousing (visitor whose host is offline, or a
@@ -3461,6 +3475,16 @@ void WorldSession::HandleHousingSvcsNeighborhoodReservePlot(WorldPackets::Housin
     response.Result = static_cast<uint8>(result);
     SendPacket(response.Write());
 
+    // The house finder's "Visit" reserves the plot and ports there: retail answers the reservation with a cast of
+    // "Visit House" to the plot's TeleportPosition (12.1.0.69933 sniff 19-48-29).
+    if (result == HOUSING_RESULT_SUCCESS)
+    {
+        uint32 worldMapId = sHousingMgr.GetWorldMapIdByNeighborhoodMapId(neighborhood->GetNeighborhoodMapID());
+        for (NeighborhoodPlotData const* plot : sHousingMgr.GetPlotsForMap(neighborhood->GetNeighborhoodMapID()))
+            if (worldMapId && plot->PlotIndex == int32(plotIndex))
+                StartHousingPlotTeleport(player, SPELL_HOUSING_VISIT_HOUSE, HousingMgr::GetPlotTeleportLocation(worldMapId, *plot));
+    }
+
     TC_LOG_INFO("housing", "CMSG_HOUSING_SVCS_NEIGHBORHOOD_RESERVE_PLOT PlotIndex: {}, Result: {}",
         plotIndex, uint32(result));
 }
@@ -3814,10 +3838,14 @@ void WorldSession::HandleHousingSvcsTeleportToPlot(WorldPackets::Housing::Housin
             }
         }
 
-        player->TeleportTo(mapData->MapID, targetPlot->TeleportPosition[0], targetPlot->TeleportPosition[1],
-            targetPlot->TeleportPosition[2], 0.0f);
+        // Own house: "Teleport Home"; anyone else's plot: "Visit House".
+        Housing const* ownHousing = player->GetHousing();
+        bool const home = ownHousing && ownHousing->GetNeighborhoodGuid() == neighborhood->GetGuid()
+            && ownHousing->GetPlotIndex() == plotIndex;
+        StartHousingPlotTeleport(player, home ? SPELL_HOUSING_TELEPORT_HOME : SPELL_HOUSING_VISIT_HOUSE,
+            HousingMgr::GetPlotTeleportLocation(mapData->MapID, *targetPlot));
 
-        TC_LOG_INFO("housing", "CMSG_HOUSING_SVCS_TELEPORT_TO_PLOT: Teleporting player {} to plot {} on map {}",
+        TC_LOG_INFO("housing", "CMSG_HOUSING_SVCS_TELEPORT_TO_PLOT: Casting the teleport of player {} to plot {} on map {}",
             player->GetGUID().ToString(), plotIndex, mapData->MapID);
     }
     else

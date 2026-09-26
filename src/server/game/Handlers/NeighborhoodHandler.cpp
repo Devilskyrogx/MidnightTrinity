@@ -1270,15 +1270,28 @@ void WorldSession::HandleNeighborhoodBuyHouse(WorldPackets::Neighborhood::Neighb
         }
     }
 
-    // Deduct gold cost (sniff-verified: 1000g = 10,000,000 copper)
-    if (!player->HasEnoughMoney(HOUSE_PURCHASE_COST_COPPER))
+    // Price of the plot: NeighborhoodPlot.Cost of the DB2 (10,000,000 copper on every 12.1.0.69933 plot).
+    NeighborhoodPlotData const* boughtPlot = nullptr;
+    for (NeighborhoodPlotData const* plot : sHousingMgr.GetPlotsForMap(neighborhood->GetNeighborhoodMapID()))
+        if (plot->PlotIndex == resolvedPlotIndex)
+            boughtPlot = plot;
+    if (!boughtPlot)
+    {
+        WorldPackets::Neighborhood::NeighborhoodBuyHouseResponse response;
+        response.Result = static_cast<uint8>(HOUSING_RESULT_PLOT_NOT_FOUND);
+        SendPacket(response.Write());
+        return;
+    }
+    uint64 const purchaseCost = boughtPlot->Cost;
+
+    if (!player->HasEnoughMoney(purchaseCost))
     {
         WorldPackets::Neighborhood::NeighborhoodBuyHouseResponse response;
         response.Result = static_cast<uint8>(HOUSING_RESULT_CANNOT_AFFORD);
         SendPacket(response.Write());
 
         TC_LOG_DEBUG("housing", "HandleNeighborhoodBuyHouse: Player {} cannot afford house (need {} copper, has {})",
-            player->GetGUID().ToString(), HOUSE_PURCHASE_COST_COPPER, player->GetMoney());
+            player->GetGUID().ToString(), purchaseCost, player->GetMoney());
         return;
     }
 
@@ -1287,7 +1300,7 @@ void WorldSession::HandleNeighborhoodBuyHouse(WorldPackets::Neighborhood::Neighb
     {
         // Consume any 5-minute reservation hold the player placed via the House Finder.
         neighborhood->ClearReservation(player->GetGUID());
-        player->ModifyMoney(-static_cast<int64>(HOUSE_PURCHASE_COST_COPPER));
+        player->ModifyMoney(-static_cast<int64>(purchaseCost));
         // Use the server's canonical neighborhood GUID, NOT the client-supplied GUID.
         // Client may send DB2 NeighborhoodID as counter while server uses internal counter.
         player->CreateHousing(neighborhood->GetGuid(), resolvedPlotIndex);

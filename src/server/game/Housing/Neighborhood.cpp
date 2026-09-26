@@ -102,8 +102,7 @@ bool Neighborhood::LoadFromDB(PreparedQueryResult neighborhood, PreparedQueryRes
                         _plots[member.PlotIndex].OwnerBnetGuid = ObjectGuid::Create<HighGuid::BNetAccount>(bnetAccountId);
                         // HouseGuid counter MUST match HousingPlayerHouseEntity GUID (WorldSession.cpp),
                         // which uses battlenetAccountId. Using ch.houseId (DB2 entry) was wrong.
-                        _plots[member.PlotIndex].HouseGuid = ObjectGuid::Create<HighGuid::Housing>(
-                            /*subType*/ 3, /*arg1*/ sRealmList->GetCurrentRealmId().Realm, /*arg2*/ 7, uint64(bnetAccountId));
+                        _plots[member.PlotIndex].HouseGuid = Housing::MakeHouseGuid(_neighborhoodMapID, bnetAccountId);
                     }
                 }
 

@@ -21,7 +21,9 @@
 #include "Define.h"
 #include "HousingDefines.h"
 #include "ObjectGuid.h"
+#include "Optional.h"
 #include "Position.h"
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -268,6 +270,14 @@ public:
     // Neighborhood plot lookups
     uint32 GetPlotStoreSize() const { return uint32(_neighborhoodPlotStore.size()); }
     std::vector<NeighborhoodPlotData const*> GetPlotsForMap(uint32 neighborhoodMapId) const;
+    /// Where a house nobody moved stands: the plot's centre, turned like the plot room.
+    Position GetDefaultHousePosition(NeighborhoodPlotData const& plot) const;
+    /// Where a housing teleport lands on a plot: TeleportPosition, facing CornerstoneRotation.Z (12.1.0.69933 sniff).
+    static WorldLocation GetPlotTeleportLocation(uint32 worldMapId, NeighborhoodPlotData const& plot);
+    /// Destination of a housing teleport spell (SPELL_HOUSING_TELEPORT_HOME / _VISIT_HOUSE) while it is being cast;
+    /// the spell script hands it to the teleport effect once the cast bar is done.
+    void SetPendingPlotTeleport(ObjectGuid playerGuid, WorldLocation const& dest);
+    Optional<WorldLocation> TakePendingPlotTeleport(ObjectGuid playerGuid);
     // Find a plot by its cornerstone GO entry within a specific neighborhood map
     NeighborhoodPlotData const* GetPlotByCornerstoneEntry(uint32 neighborhoodMapId, uint32 cornerstoneGoEntry) const;
 
@@ -399,6 +409,8 @@ public:
     void RemoveIgnoredNeighborhood(ObjectGuid playerGuid, ObjectGuid neighborhoodGuid);
 
 private:
+    std::mutex _pendingPlotTeleportsLock;
+    std::unordered_map<ObjectGuid, WorldLocation> _pendingPlotTeleports;
     // Ensure the player's ignore set is loaded from DB into _ignoredNeighborhoods.
     std::unordered_set<ObjectGuid>& EnsureIgnoredNeighborhoodsLoaded(ObjectGuid playerGuid);
     void LoadHouseDecorData();

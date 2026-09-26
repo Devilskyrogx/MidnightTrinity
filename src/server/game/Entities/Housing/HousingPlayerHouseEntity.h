@@ -35,6 +35,8 @@ public:
     std::string GetDebugInfo() const override;
 
     void SendUpdateToPlayer(Player* player);
+    // The entity stands for the logged-in character's house (Housing::SyncUpdateFields); its GUID follows that house.
+    void SetGuid(ObjectGuid const& guid) { _Create(guid); }
     // Force-emit CREATE_OBJECT (bypasses HaveAtClient). See Housing/4 twin
     // for rationale — the world-map / plot icon refresh path needs CREATE
     // on wholesale re-pushes (sniff-verified against retail dumps).

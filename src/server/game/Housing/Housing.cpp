@@ -117,16 +117,20 @@ bool Housing::LoadFromDB(PreparedQueryResult housing, PreparedQueryResult decor,
     // fields[0] = houseId (DB2 entry ID) — NOT used as GUID counter.
     // Housing GUID counter must match HousingPlayerHouseEntity GUID (WorldSession.cpp), which uses battlenetAccountId.
     uint32 bnetAccountId = _owner->GetSession()->GetBattlenetAccountId();
-    _houseGuid = ObjectGuid::Create<HighGuid::Housing>(/*subType*/ 3, /*arg1*/ sRealmList->GetCurrentRealmId().Realm, /*arg2*/ 7, uint64(bnetAccountId));
     // Take the neighborhood's real GUID from the manager rather than rebuilding it: arg1 is its
     // NeighborhoodMapID, and this GUID goes out to the client in house/neighborhood packets, so a wrong arg1
     // reproduces the client-side NeighborhoodMap.db2 miss on the house path too.
     _neighborhoodGuid.Clear();
+    uint32 neighborhoodMapId = 0;
     if (Neighborhood const* neighborhood = sNeighborhoodMgr.GetNeighborhoodByCounter(fields[1].GetUInt64()))
+    {
         _neighborhoodGuid = neighborhood->GetGuid();
+        neighborhoodMapId = neighborhood->GetNeighborhoodMapID();
+    }
     else
         TC_LOG_ERROR("housing", "Housing::LoadFromDB: house references neighborhood counter {} which is not loaded",
             fields[1].GetUInt64());
+    _houseGuid = MakeHouseGuid(neighborhoodMapId, bnetAccountId);
     _plotIndex = fields[2].GetUInt8();
     _level = fields[3].GetUInt32();
     _favor = fields[4].GetUInt32();
@@ -740,7 +744,8 @@ HousingResult Housing::Create(ObjectGuid neighborhoodGuid, uint8 plotIndex)
             _owner->GetGUID().ToString());
         bnetAccountId = static_cast<uint32>(_owner->GetGUID().GetCounter());
     }
-    _houseGuid = ObjectGuid::Create<HighGuid::Housing>(/*subType*/ 3, /*arg1*/ sRealmList->GetCurrentRealmId().Realm, /*arg2*/ 7, uint64(bnetAccountId));
+    Neighborhood const* neighborhood = sNeighborhoodMgr.GetNeighborhood(neighborhoodGuid);
+    _houseGuid = MakeHouseGuid(neighborhood ? neighborhood->GetNeighborhoodMapID() : 0, bnetAccountId);
 
     TC_LOG_ERROR("housing", "Housing::Create: Player {} (BNetAcct {}) created house on plot {} in neighborhood {} — HouseGuid={}",
         _owner->GetName(), bnetAccountId, plotIndex, _neighborhoodGuid.ToString(), _houseGuid.ToString());
@@ -2054,6 +2059,11 @@ void Housing::LoadDoorTypes(Room& room, std::string const& doorTypes)
         room.DoorTypes[room.DoorTypeId] = room.DoorSlot;
 }
 
+ObjectGuid Housing::MakeHouseGuid(uint32 neighborhoodMapId, uint32 bnetAccountId)
+{
+    return ObjectGuid::Create<HighGuid::Housing>(/*subType*/ 3, /*arg1*/ neighborhoodMapId, /*arg2*/ 7, uint64(bnetAccountId));
+}
+
 std::string Housing::SerializeComponentStyles(Room const& room)
 {
     // "componentId:themeId:textureId,..." - 0 where the slot keeps the surface default
@@ -3256,6 +3266,9 @@ void Housing::SyncUpdateFields()
 
     // FHousingPlayerHouse_C belongs on the Housing/3 entity, NOT the BNetAccount entity.
     HousingPlayerHouseEntity& houseEntity = _owner->GetSession()->GetHousingPlayerHouseEntity();
+    // The session's house entity is this character's house (retail: the Horde character gets its Horde house GUID)
+    if (houseEntity.GetGUID() != _houseGuid)
+        houseEntity.SetGuid(_houseGuid);
     houseEntity.SetBnetAccount(_owner->GetSession()->GetBattlenetAccountGUID());
     houseEntity.SetEntityGUID(_houseGuid);
     // HouseType and HouseSize are NOT part of this fragment (IDA-verified).

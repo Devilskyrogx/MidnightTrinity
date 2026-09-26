@@ -116,8 +116,7 @@ Frame InteriorRoomFrame(int32 gridX, int32 gridY, int32 floorIndex, uint32 orien
     return frame;
 }
 
-// The plot a house stands on, as HousingMap places it: NeighborhoodPlot.HousePosition, facing HouseRotation.z or, where
-// the DB2 leaves the rotation empty, towards the cornerstone.
+// The plot a house stands on, as HousingMap places it (HousingMgr::GetDefaultHousePosition).
 Frame PlotFrame(Housing const& housing)
 {
     Frame frame;
@@ -130,12 +129,11 @@ Frame PlotFrame(Housing const& housing)
         if (!plot || plot->PlotIndex != int32(housing.GetPlotIndex()))
             continue;
 
-        frame.X = plot->HousePosition[0];
-        frame.Y = plot->HousePosition[1];
-        frame.Z = plot->HousePosition[2];
-        frame.Facing = plot->HouseRotation[2];
-        if (plot->HouseRotation[0] == 0.0f && plot->HouseRotation[1] == 0.0f && plot->HouseRotation[2] == 0.0f)
-            frame.Facing = std::atan2(plot->CornerstonePosition[1] - frame.Y, plot->CornerstonePosition[0] - frame.X);
+        Position const spot = sHousingMgr.GetDefaultHousePosition(*plot);
+        frame.X = spot.GetPositionX();
+        frame.Y = spot.GetPositionY();
+        frame.Z = spot.GetPositionZ();
+        frame.Facing = spot.GetOrientation();
         break;
     }
     return frame;

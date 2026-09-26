@@ -825,7 +825,6 @@ static constexpr uint32 MAX_PENDING_INVITES             = 20;
 static constexpr uint32 MIN_CHARTER_SIGNATURES          = 4;
 static constexpr uint8  INVALID_PLOT_INDEX              = 255;
 static constexpr uint32 HOUSING_MAX_NAME_LENGTH         = 64;
-static constexpr uint64 HOUSE_PURCHASE_COST_COPPER      = 1000ULL * 10000ULL;      // 1000g (sniff: 0x989680 = 10,000,000 copper)
 static constexpr uint64 HOUSE_MOVE_COST_COPPER          = 500ULL * 10000ULL;       // 500g move cost
 static constexpr uint32 MAX_HOUSE_LEVEL                 = 20;
 
@@ -867,6 +866,9 @@ static constexpr uint32 SPELL_HOUSING_ROOM_EDIT_MODE_AURA = 1263316;
 
 // "Leave House" (effect 343): cast by the interior door after it opens; takes the player out to the plot
 static constexpr uint32 SPELL_HOUSING_LEAVE_HOUSE       = 1234193;
+// 10 s casts that end in SPELL_EFFECT_TELEPORT_UNITS to a plot (12.1.0.69933 sniff 19-48-29)
+static constexpr uint32 SPELL_HOUSING_TELEPORT_HOME     = 1233637; // CMSG_HOUSING_SVCS_TELEPORT_TO_PLOT to one's own plot
+static constexpr uint32 SPELL_HOUSING_VISIT_HOUSE       = 1265142; // house finder "Visit" (after the plot reservation) and other plots
 
 // Spell applied when player enters their own housing plot
 // Sniff: aura slot 50/55, Flags=NoCaster, ActiveFlags=1-2, CastLevel=36
@@ -923,22 +925,6 @@ static constexpr uint32 WORLDSTATE_HOUSING_COUNTER_5    = 16711;
 
 // WS[30906]: Toggled 1 when inside a house interior (MapID=2783), 0 when leaving.
 static constexpr uint32 WORLDSTATE_HOUSING_INTERIOR     = 30906;
-
-// Synthetic per-plot binary occupancy WorldState base. Retail's NeighborhoodPlot
-// DB2 carries a `WorldState` column that is sent through SMSG_INIT_WORLD_STATES
-// (and broadcast via SMSG_UPDATE_WORLD_STATE when a plot changes owned/empty).
-// Our DB2 extraction has this column zero for every plot, so no worldstate is
-// set or broadcast — the "is a house here?" signal never reaches the client.
-// Fall back to a synthetic ID keyed on NeighborhoodMapID + PlotIndex so the
-// binary occupancy channel works even without the DB2 data. Range chosen to
-// avoid collision with live retail worldstates (< 40000 in our current world_state
-// table) and is unique per (NeighborhoodMapID, PlotIndex) pair up to map 99.
-static constexpr uint32 WORLDSTATE_HOUSING_PLOT_BASE = 40000;
-
-inline uint32 MakeHousingPlotWorldStateId(uint32 neighborhoodMapId, uint32 plotIndex)
-{
-    return WORLDSTATE_HOUSING_PLOT_BASE + (neighborhoodMapId * 100u) + plotIndex;
-}
 
 // Interval and increment for housing WorldState counter updates
 static constexpr uint32 HOUSING_WORLDSTATE_INTERVAL_MS  = 300;
@@ -1033,6 +1019,9 @@ static constexpr float HOUSE_INTERIOR_FLOOR_HEIGHT = 12.0f;
 // Interior front-door GameObjects, picked by faction in HouseInteriorMap. Unlike the exterior
 // doors these are NOT reachable from ExteriorComponent (Type 11), so HousingMgr has to bind the
 // go_housing_door script to them explicitly - without it the door inside the house is inert.
+// HouseDecor.ModelType
+static constexpr uint8 HOUSE_DECOR_MODEL_TYPE_WMO = 2; // interior walls, pillars, doorways
+
 static constexpr uint32 INTERIOR_DOOR_GO_ALLIANCE = 575017; // displayId 113554
 static constexpr uint32 INTERIOR_DOOR_GO_HORDE    = 587318;
 

@@ -31,10 +31,12 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "QuaternionData.h"
 #include "RaceMask.h"
 #include "Random.h"
 #include "SharedDefines.h"
 #include "SocialMgr.h"
+#include <cmath>
 #include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"
@@ -344,6 +346,17 @@ void HousingMgr::LoadNeighborhoodPlotData()
         data.PlotGameObjectID = entry->PlotGameObjectID;
         data.TeleportFacing = entry->TeleportFacing;
         data.Field_016 = entry->Field_016;
+
+        // The plot's centre is its PlotGameObjectID row of GameObjects.db2 ("Plot - Plot N"): retail puts the plot room
+        // there to the centimetre (12.1.0.69933, Alliance plots 7 and 9). NeighborhoodPlot.HousePosition matches it on
+        // most Alliance plots, but on the Horde map it belongs to other plots (53 of 55 rows are hundreds of yards off,
+        // some out at sea), so a new Horde house was built in the water.
+        if (GameObjectsEntry const* plotGo = sGameObjectsStore.LookupEntry(entry->PlotGameObjectID))
+        {
+            data.HousePosition[0] = plotGo->Pos.X;
+            data.HousePosition[1] = plotGo->Pos.Y;
+            data.HousePosition[2] = plotGo->Pos.Z;
+        }
     }
 
     // Build map index
@@ -439,7 +452,7 @@ void HousingMgr::LoadNeighborhoodPlotData()
     if (dynamicAdded > 0)
     {
         TC_LOG_ERROR("housing", "HousingMgr::LoadNeighborhoodPlotData: {} cornerstone + {} plot marker GO templates were MISSING from gameobject_template and GameObjects.db2. "
-            "Dynamically registered them. Apply sql/housing/world_housing_go_templates.sql to the world DB to fix permanently.",
+            "Dynamically registered them. Re-extract GameObjects.db2 or add the templates to gameobject_template.",
             missingCornerstone, missingPlotGO);
     }
 }
@@ -546,6 +559,45 @@ uint32 HousingMgr::GetWorldMapIdByNeighborhoodMapId(uint32 neighborhoodMapId) co
             return static_cast<uint32>(worldMapId);
     }
     return 0;
+}
+
+WorldLocation HousingMgr::GetPlotTeleportLocation(uint32 worldMapId, NeighborhoodPlotData const& plot)
+{
+    return WorldLocation(worldMapId, plot.TeleportPosition[0], plot.TeleportPosition[1], plot.TeleportPosition[2],
+        plot.CornerstoneRotation[2]);
+}
+
+void HousingMgr::SetPendingPlotTeleport(ObjectGuid playerGuid, WorldLocation const& dest)
+{
+    std::lock_guard<std::mutex> lock(_pendingPlotTeleportsLock);
+    _pendingPlotTeleports[playerGuid] = dest;
+}
+
+Optional<WorldLocation> HousingMgr::TakePendingPlotTeleport(ObjectGuid playerGuid)
+{
+    std::lock_guard<std::mutex> lock(_pendingPlotTeleportsLock);
+    auto itr = _pendingPlotTeleports.find(playerGuid);
+    if (itr == _pendingPlotTeleports.end())
+        return {};
+    WorldLocation dest = itr->second;
+    _pendingPlotTeleports.erase(itr);
+    return dest;
+}
+
+Position HousingMgr::GetDefaultHousePosition(NeighborhoodPlotData const& plot) const
+{
+    // 12.1.0.69933 sniffs (both factions): a house root that was never moved sits at local (0,0,0) with no rotation under
+    // the plot room, and the plot room is the plot's GameObjects.db2 row turned half a revolution.
+    if (GameObjectsEntry const* plotGo = sGameObjectsStore.LookupEntry(plot.PlotGameObjectID))
+    {
+        float goYaw = 0.0f, unusedY = 0.0f, unusedX = 0.0f;
+        QuaternionData(plotGo->Rot[0], plotGo->Rot[1], plotGo->Rot[2], plotGo->Rot[3]).toEulerAnglesZYX(goYaw, unusedY, unusedX);
+        return Position(plotGo->Pos.X, plotGo->Pos.Y, plotGo->Pos.Z, Position::NormalizeOrientation(goYaw + float(M_PI)));
+    }
+
+    // No plot GameObject: the plot's own position, facing the cornerstone.
+    return Position(plot.HousePosition[0], plot.HousePosition[1], plot.HousePosition[2],
+        std::atan2(plot.CornerstonePosition[1] - plot.HousePosition[1], plot.CornerstonePosition[0] - plot.HousePosition[0]));
 }
 
 std::vector<NeighborhoodPlotData const*> HousingMgr::GetPlotsForMap(uint32 neighborhoodMapId) const
@@ -777,16 +829,7 @@ uint32 HousingMgr::GetDecorWeightCost(uint32 decorEntryId) const
 
 uint32 HousingMgr::GetRoomWeightCost(uint32 roomEntryId) const
 {
-    // Stairwell Room (Empty) is auto-spawned as the upper partner of a
-    // Stairwell (Left/Right) placement. The player already paid the
-    // stairwell's 7 weight once; charging another 5-7 for the sibling
-    // would eat over half the 19-point budget on a single visible
-    // stairwell. The budget is cumulative across all floors — we just
-    // don't double-charge for the server-managed upper half.
-    constexpr uint32 STAIRWELL_EMPTY_ROOM_ID = 48;
-    if (roomEntryId == STAIRWELL_EMPTY_ROOM_ID)
-        return 0;
-
+    // HouseRoom.WeightCost; the upper half of a stairwell is free (Housing::GetRoomWeightCost).
     HouseRoomData const* roomData = GetHouseRoomData(roomEntryId);
     if (roomData)
         return static_cast<uint32>(std::max<int32>(roomData->WeightCost, 1));
@@ -1452,10 +1495,7 @@ void HousingMgr::EnsureDoorGameObjectTemplates()
     // GameObject::Use() calls AI()->OnGossipHello() for every GO type, so with no ScriptName
     // the click reaches the default AI, falls through to the GOOBER branch, plays the open
     // animation and does nothing else: the door looked interactive (gear cursor, client sends
-    // CMSG_GAME_OBJ_USE) but never teleported anyone. The goober.spell fallback (1271876,
-    // spell_housing_door_open) cannot cover for it either - GO_JUST_DEACTIVATED self-casts it
-    // player->player, so the script's GetExplTargetWorldObject() is the player and its
-    // ToGameObject() is null, and it bails before re-entering Use().
+    // CMSG_GAME_OBJ_USE) but never teleported anyone.
     uint32 const doorScriptId = sObjectMgr->GetScriptId("go_housing_door", false);
 
     for (ExteriorComponentEntry const* entry : sExteriorComponentStore)
@@ -1913,58 +1953,22 @@ int32 HousingMgr::GetFactionDefaultThemeID(int32 factionRestriction) const
 
 int32 HousingMgr::GetDefaultSubThemeID(int32 baseThemeID) const
 {
-    // Converts a base theme (1=Folk, 2=Rugged) to the default sub-theme (6=Folk Medium,
-    // 8=Rugged Medium) for writing to FHousingRoomComponentMesh_C.HouseThemeID.
-    // Sniff-verified: new houses use "Medium" sub-theme by default.
-    // Base themes with ParentThemeID=0 have child sub-themes:
-    //   Folk(1) → Folk Medium(6), Folk Dark(7), Folk Light(20)
-    //   Rugged(2) → Rugged Medium(8), Rugged Dark(9), Rugged Light(26)
-    switch (baseThemeID)
-    {
-        case 1: return 6;  // Folk → Folk Medium
-        case 2: return 8;  // Rugged → Rugged Medium
-        case 3: return 3;  // Generic (no sub-themes)
-        case 4: return 4;  // Bel'ameth (no sub-themes)
-        case 5: return 5;  // Silvermoon (no sub-themes)
-        default: return baseThemeID;
-    }
+    // The sub-theme written to FHousingRoomComponentMesh_C.HouseThemeID for a base theme: its "(neutral)" child in
+    // HouseTheme.db2, which is always the lowest child ID (Folk 6, Rugged 8, Bel'ameth 10, Silvermoon 12). A theme
+    // without children (Standard 3) stands for itself.
+    int32 defaultSubTheme = 0;
+    for (auto const& [id, theme] : _houseThemeStore)
+        if (theme.ParentThemeID == baseThemeID && (!defaultSubTheme || int32(id) < defaultSubTheme))
+            defaultSubTheme = int32(id);
+    return defaultSubTheme ? defaultSubTheme : baseThemeID;
 }
 
 int32 HousingMgr::GetBaseThemeID(int32 themeID) const
 {
-    // Convert a sub-theme (e.g., 20=Folk Light) to its base theme (1=Folk).
-    // Sub-themes have ParentThemeID != 0 in HouseTheme DB2.
-    // RoomComponentOption entries only exist for base themes (1-5).
-
-    // 1) Try DB2 data (ParentThemeID field from CASC)
+    // RoomComponentOption rows are keyed by base theme; a sub-theme resolves through HouseTheme.ParentThemeID.
     auto itr = _houseThemeStore.find(themeID);
     if (itr != _houseThemeStore.end() && itr->second.ParentThemeID != 0)
         return itr->second.ParentThemeID;
-
-    // Already a base theme (1-5)
-    if (themeID >= 1 && themeID <= 5)
-        return themeID;
-
-    // 2) Hardcoded fallback: sub-theme → base theme mapping from DB2 build 66838.
-    // This covers the case where ParentThemeID is not properly loaded from DB2
-    // (e.g., hotfix table schema mismatch). Only needed for sub-themes (6-28).
-    // Base themes: 1=Folk, 2=Rugged, 3=Generic, 4=Bel'ameth, 5=Silvermoon
-    switch (themeID)
-    {
-        // Folk (1) sub-themes
-        case 6:  case 7:  case 20: return 1;
-        // Rugged (2) sub-themes
-        case 8:  case 9:  case 26: return 2;
-        // Generic (3) sub-themes
-        case 10: case 27: return 3;
-        // Bel'ameth (4) sub-themes
-        case 11: case 12: case 28: return 4;
-        // Silvermoon (5) sub-themes
-        case 13: return 5;
-        default: break;
-    }
-
-    TC_LOG_DEBUG("housing", "HousingMgr::GetBaseThemeID: Unknown themeID {} (no ParentThemeID, not in fallback)", themeID);
     return themeID;
 }
 
