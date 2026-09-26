@@ -31,6 +31,9 @@
 #include "Player.h"
 #include <algorithm>
 #include "RealmList.h"
+#include "StringConvert.h"
+#include "StringFormat.h"
+#include "Util.h"
 #include "WorldSession.h"
 #include <cmath>
 #include <queue>
@@ -193,6 +196,8 @@ bool Housing::LoadFromDB(PreparedQueryResult housing, PreparedQueryResult decor,
             room.WallThemeId = fields[17].GetUInt32();
             room.FloorThemeId = fields[18].GetUInt32();
             room.CeilingThemeId = fields[19].GetUInt32();
+            LoadDoorTypes(room, fields[20].GetString());
+            LoadComponentStyles(room, fields[21].GetString());
             // Legacy rows (pre-per-surface-theme migration) have all three = 0:
             // seed them from the single ThemeId so old houses keep their look.
             if (!room.WallThemeId && !room.FloorThemeId && !room.CeilingThemeId && room.ThemeId)
@@ -489,15 +494,8 @@ bool Housing::LoadFromDB(PreparedQueryResult housing, PreparedQueryResult decor,
         }
     }
 
-    // Auto-place starter decor for existing houses with catalog but no placed decor.
-    // This handles houses created before the starter decor placement was added.
-    if (_placedDecor.empty() && !_catalog.empty() && !_houseGuid.IsEmpty() && _owner)
-    {
-        uint32 placed = PlaceStarterDecor();
-        if (placed > 0)
-            TC_LOG_ERROR("housing", "Housing::LoadFromDB: Auto-placed {} starter decor items for house {} (migration fixup)",
-                placed, _houseGuid.ToString());
-    }
+    // Starter decor is placed once, when the house is bought (NeighborhoodHandler). No top-up here: a house whose owner
+    // cleared every item would get the starter set back on each login.
 
     // Recalculate budget weights from loaded data
     RecalculateBudgets();
@@ -612,6 +610,8 @@ void Housing::SaveToDB(CharacterDatabaseTransaction trans)
         stmt->setUInt32(index++, room.WallThemeId);
         stmt->setUInt32(index++, room.FloorThemeId);
         stmt->setUInt32(index++, room.CeilingThemeId);
+        stmt->setString(index++, SerializeDoorTypes(room));
+        stmt->setString(index++, SerializeComponentStyles(room));
         trans->Append(stmt);
     }
 
@@ -672,8 +672,39 @@ void Housing::SetEditorMode(HousingEditorMode mode)
     // The client reads EditorMode from PlayerHouseInfoComponentData to set
     // the internal editor state (ClientHousingDecorSystem +329) which gates
     // ClickTarget (flag 16) for decor selection.
+    //
+    // The field carries the editing context, not HousingEditorMode (12.1.0.69933 sniffs: decor edit = 1, room
+    // layout = 2, fixture edit = 3). Layout used to go out as 3, so the client ran the exterior-fixture camera,
+    // anchored to the house on the plot, and kept it after leaving the interior.
+    HouseEditingContext context = HOUSE_EDITING_CONTEXT_NONE;
+    switch (mode)
+    {
+        case HOUSING_EDITOR_MODE_BASIC_DECOR:
+        case HOUSING_EDITOR_MODE_EXPERT_DECOR:
+        case HOUSING_EDITOR_MODE_CLEANUP:
+            context = HOUSE_EDITING_CONTEXT_DECOR;
+            break;
+        case HOUSING_EDITOR_MODE_LAYOUT:
+        case HOUSING_EDITOR_MODE_CUSTOMIZE:
+            context = HOUSE_EDITING_CONTEXT_ROOM;
+            break;
+        case HOUSING_EDITOR_MODE_EXTERIOR_CUSTOMIZATION:
+            context = HOUSE_EDITING_CONTEXT_FIXTURE;
+            break;
+        default:
+            break;
+    }
+
     if (_owner)
-        _owner->SetHousingEditorModeUpdateField(static_cast<uint8>(mode));
+    {
+        _owner->SetHousingEditorModeUpdateField(static_cast<uint8>(context));
+
+        // The "Disable All the Things" auras belong to one editor each; leaving it (or the map) drops them.
+        if (context != HOUSE_EDITING_CONTEXT_DECOR)
+            _owner->RemoveAurasDueToSpell(SPELL_HOUSING_EDIT_MODE_AURA);
+        if (context != HOUSE_EDITING_CONTEXT_ROOM)
+            _owner->RemoveAurasDueToSpell(SPELL_HOUSING_ROOM_EDIT_MODE_AURA);
+    }
 }
 
 HousingResult Housing::Create(ObjectGuid neighborhoodGuid, uint8 plotIndex)
@@ -1620,7 +1651,7 @@ HousingResult Housing::PlaceRoom(uint32 roomEntryId, uint32 slotIndex, uint32 or
     }
 
     // Check WeightCost-based room budget
-    uint32 roomWeightCost = sHousingMgr.GetRoomWeightCost(roomEntryId);
+    uint32 roomWeightCost = GetRoomWeightCost(roomEntryId, gridX, gridY, floorIndex, ObjectGuid::Empty);
     if (_roomWeightUsed + roomWeightCost > GetMaxRoomBudget())
     {
         TC_LOG_ERROR("housing", "PlaceRoom: rejected entry {} - weight budget exceeded (used={} + cost={} > max={})",
@@ -1696,6 +1727,10 @@ HousingResult Housing::RemoveRoom(ObjectGuid roomGuid)
     if (_rooms.size() <= 1)
         return HOUSING_RESULT_ROOM_UPDATE_FAILED;
 
+    // Verify remaining rooms stay connected after removal (BFS from base room) - before touching its decor
+    if (!IsRoomGraphConnectedWithout(roomGuid))
+        return HOUSING_RESULT_ROOM_UPDATE_FAILED;
+
     // Auto-remove any placed decor in this room (return to catalog)
     std::vector<ObjectGuid> decorToRemove;
     for (auto const& [guid, decor] : _placedDecor)
@@ -1710,12 +1745,8 @@ HousingResult Housing::RemoveRoom(ObjectGuid roomGuid)
         RemoveDecor(decorGuid);
     }
 
-    // Verify remaining rooms stay connected after removal (BFS from base room)
-    if (!IsRoomGraphConnectedWithout(roomGuid))
-        return HOUSING_RESULT_ROOM_UPDATE_FAILED;
-
     // Refund room WeightCost budget
-    uint32 roomWeightCost = sHousingMgr.GetRoomWeightCost(itr->second.RoomEntryId);
+    uint32 roomWeightCost = GetRoomWeightCost(itr->second.RoomEntryId, itr->second.GridX, itr->second.GridY, itr->second.FloorIndex, roomGuid);
     if (_roomWeightUsed >= roomWeightCost)
         _roomWeightUsed -= roomWeightCost;
     else
@@ -1740,18 +1771,432 @@ HousingResult Housing::RotateRoom(ObjectGuid roomGuid, bool clockwise)
         return HOUSING_RESULT_ROOM_NOT_FOUND;
 
     Room& room = itr->second;
-    if (clockwise)
-        room.Orientation = (room.Orientation + 1) % 4;
-    else
-        room.Orientation = (room.Orientation + 3) % 4; // +3 mod 4 == -1 mod 4
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
+    if (!roomData || roomData->IsBaseRoom())
+        return HOUSING_RESULT_ROOM_UPDATE_FAILED;
 
-    PersistRoomToDB(roomGuid, room);
+    // Retail (12.1.0.69933 sniffs) turns a room about its own centre, a quarter per step (clockwise = negative
+    // yaw), skipping headings where any room it is attached to would lose its door - a square room between two
+    // others just turns, an L room hanging off one door jumps to the next heading that still meets it.
+    std::vector<Room const*> rooms = GetRooms();
+    Room const* partner = FindStairwellPartner(room);
+    ObjectGuid const partnerGuid = partner ? partner->Guid : ObjectGuid::Empty;
 
-    TC_LOG_DEBUG("housing", "Housing::RotateRoom: Player {} rotated room {} to orientation {} in house {}",
-        _owner->GetName(), roomGuid.ToString(), room.Orientation, _houseGuid.ToString());
+    auto attachedRooms = [](Room const& r, std::vector<Room const*> const& layout)
+    {
+        std::vector<ObjectGuid> attached;
+        for (RoomDoor const& door : GetRoomDoors(r))
+            if (!door.IsVertical())
+                if (Room const* other = FindRoomAtDoor(layout, r, door))
+                    attached.push_back(other->Guid);
+        return attached;
+    };
+    auto keepsAll = [](std::vector<ObjectGuid> const& before, std::vector<ObjectGuid> const& after)
+    {
+        return std::all_of(before.begin(), before.end(), [&](ObjectGuid const& guid) { return std::find(after.begin(), after.end(), guid) != after.end(); });
+    };
+
+    std::vector<ObjectGuid> const attachedBefore = attachedRooms(room, rooms);
+    std::vector<ObjectGuid> const partnerAttachedBefore = partner ? attachedRooms(*partner, rooms) : std::vector<ObjectGuid>();
+
+    int32 const gridX = room.GridX;
+    int32 const gridY = room.GridY;
+    uint32 orientation = room.Orientation;
+    bool placed = false;
+    for (uint32 step = 1; step < 4 && !placed; ++step)
+    {
+        uint32 const candidate = clockwise ? (room.Orientation + 4 - step) % 4 : (room.Orientation + step) % 4;
+        if (!RoomFits(rooms, room.RoomEntryId, gridX, gridY, room.FloorIndex, candidate, roomGuid))
+            continue;
+        if (partner && !RoomFits(rooms, partner->RoomEntryId, gridX, gridY, partner->FloorIndex, candidate, partnerGuid))
+            continue;
+
+        Room turned = room;
+        turned.Orientation = candidate;
+        Room turnedPartner = partner ? *partner : Room();
+        turnedPartner.Orientation = candidate;
+
+        std::vector<Room const*> layout;
+        for (Room const* r : rooms)
+            layout.push_back(r->Guid == roomGuid ? &turned : (partner && r->Guid == partnerGuid ? &turnedPartner : r));
+
+        if (!keepsAll(attachedBefore, attachedRooms(turned, layout)))
+            continue;
+        if (partner && !keepsAll(partnerAttachedBefore, attachedRooms(turnedPartner, layout)))
+            continue;
+
+        orientation = candidate;
+        placed = true;
+    }
+
+    if (!placed)
+        return HOUSING_RESULT_ROOM_UPDATE_FAILED;
+
+    SetRoomPlacement(room, gridX, gridY, orientation);
+    if (partner)
+        SetRoomPlacement(_rooms[partnerGuid], gridX, gridY, orientation);
+
+    TC_LOG_DEBUG("housing", "Housing::RotateRoom: Player {} rotated room {} to orientation {} at ({}, {}) in house {}",
+        _owner->GetName(), roomGuid.ToString(), room.Orientation, room.GridX, room.GridY, _houseGuid.ToString());
 
     SyncUpdateFields();
     return HOUSING_RESULT_SUCCESS;
+}
+
+void Housing::SetRoomPlacement(Room& room, int32 gridX, int32 gridY, uint32 orientation)
+{
+    constexpr float QUARTER_TURN = 1.57079632679f;
+    int32 const oldX = room.GridX;
+    int32 const oldY = room.GridY;
+    float const turn = float(int32(orientation) - int32(room.Orientation)) * QUARTER_TURN;
+
+    room.GridX = gridX;
+    room.GridY = gridY;
+    room.Orientation = orientation;
+    PersistRoomToDB(room.Guid, room);
+
+    // Placed decor is stored in interior world space; it rides along with its room (the client already moves it,
+    // it hangs off the room entity).
+    NeighborhoodMapData const* interior = sHousingMgr.GetNeighborhoodMapDataForWorldMap(HOUSE_INTERIOR_MAP_ID);
+    if (!interior)
+        return;
+
+    float const cosT = std::cos(turn);
+    float const sinT = std::sin(turn);
+    float const cz = std::cos(turn / 2.0f);
+    float const sz = std::sin(turn / 2.0f);
+    float const fromX = interior->Origin[0] + float(oldX);
+    float const fromY = interior->Origin[1] + float(oldY);
+    float const toX = interior->Origin[0] + float(gridX);
+    float const toY = interior->Origin[1] + float(gridY);
+
+    for (auto& [decorGuid, decor] : _placedDecor)
+    {
+        if (decor.RoomGuid != room.Guid)
+            continue;
+
+        float const dx = decor.PosX - fromX;
+        float const dy = decor.PosY - fromY;
+        decor.PosX = toX + dx * cosT - dy * sinT;
+        decor.PosY = toY + dx * sinT + dy * cosT;
+
+        // q' = rotZ(turn) * q
+        float const qx = decor.RotationX, qy = decor.RotationY, qz = decor.RotationZ, qw = decor.RotationW;
+        decor.RotationX = cz * qx - sz * qy;
+        decor.RotationY = cz * qy + sz * qx;
+        decor.RotationZ = cz * qz + sz * qw;
+        decor.RotationW = cz * qw - sz * qz;
+
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHARACTER_HOUSING_DECOR_POSITION);
+        stmt->setFloat(0, decor.PosX);
+        stmt->setFloat(1, decor.PosY);
+        stmt->setFloat(2, decor.PosZ);
+        stmt->setFloat(3, decor.RotationX);
+        stmt->setFloat(4, decor.RotationY);
+        stmt->setFloat(5, decor.RotationZ);
+        stmt->setFloat(6, decor.RotationW);
+        stmt->setFloat(7, decor.Scale);
+        stmt->setUInt64(8, _owner->GetGUID().GetCounter());
+        stmt->setUInt64(9, decorGuid.GetCounter());
+        CharacterDatabase.Execute(stmt);
+    }
+}
+
+void Housing::RotateRoomOffset(float x, float y, uint32 orientation, float& outX, float& outY)
+{
+    // Exact quarter turns, counter-clockwise (same sense as the room entity's yaw).
+    switch (orientation % 4)
+    {
+        case 0: outX = x;  outY = y;  break;
+        case 1: outX = -y; outY = x;  break;
+        case 2: outX = -x; outY = -y; break;
+        default: outX = y; outY = -x; break;
+    }
+}
+
+std::vector<Housing::RoomDoor> Housing::GetRoomDoors(uint32 roomEntryId, float gridX, float gridY, uint32 orientation)
+{
+    std::vector<RoomDoor> doors;
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(roomEntryId);
+    std::vector<RoomComponentData> const* components = roomData ? sHousingMgr.GetRoomComponents(roomData->RoomWmoDataID) : nullptr;
+    if (!components)
+        return doors;
+
+    for (RoomComponentData const& comp : *components)
+    {
+        if (comp.ConnectionType == 0)
+            continue;
+
+        // Retail FHousingRoomData.Doors: connectable walls with exactly one horizontal offset axis, and for a
+        // stairwell also its connectable floor and ceiling (the link between its two stacked halves).
+        bool const alongX = std::abs(comp.OffsetPos[0]) > 0.5f;
+        bool const alongY = std::abs(comp.OffsetPos[1]) > 0.5f;
+        int32 dirZ = 0;
+        if (comp.Type == HOUSING_ROOM_COMPONENT_WALL)
+        {
+            if (alongX == alongY)
+                continue;
+        }
+        else if (roomData->HasStairs() && (comp.Type == HOUSING_ROOM_COMPONENT_FLOOR || comp.Type == HOUSING_ROOM_COMPONENT_CEILING))
+            dirZ = comp.Type == HOUSING_ROOM_COMPONENT_CEILING ? 1 : -1;
+        else
+            continue;
+
+        RoomDoor& door = doors.emplace_back();
+        door.ComponentId = comp.ID;
+        door.ComponentType = comp.Type;
+        door.Local.Relocate(comp.OffsetPos[0], comp.OffsetPos[1], comp.OffsetPos[2]);
+
+        float offsetX, offsetY;
+        RotateRoomOffset(comp.OffsetPos[0], comp.OffsetPos[1], orientation, offsetX, offsetY);
+        door.X = gridX + offsetX;
+        door.Y = gridY + offsetY;
+
+        if (dirZ)
+        {
+            door.DirZ = dirZ;
+            continue;
+        }
+
+        float dirX, dirY;
+        RotateRoomOffset(alongX ? (comp.OffsetPos[0] > 0.0f ? 1.0f : -1.0f) : 0.0f,
+            alongY ? (comp.OffsetPos[1] > 0.0f ? 1.0f : -1.0f) : 0.0f, orientation, dirX, dirY);
+        door.DirX = int32(dirX);
+        door.DirY = int32(dirY);
+    }
+
+    std::sort(doors.begin(), doors.end(), [](RoomDoor const& a, RoomDoor const& b) { return a.ComponentId < b.ComponentId; });
+    return doors;
+}
+
+Housing::Room const* Housing::FindRoomAtDoor(std::vector<Room const*> const& rooms, Room const& room, RoomDoor const& door, uint32* outComponentId /*= nullptr*/)
+{
+    constexpr float TOLERANCE = 0.6f;
+    for (Room const* other : rooms)
+    {
+        if (!other || other->Guid == room.Guid)
+            continue;
+
+        // Walls meet on one floor; a stairwell's ceiling meets the floor of the half stacked right above it.
+        if (door.IsVertical())
+        {
+            if (other->FloorIndex != room.FloorIndex + door.DirZ || other->GridX != room.GridX || other->GridY != room.GridY)
+                continue;
+        }
+        else if (other->FloorIndex != room.FloorIndex)
+            continue;
+
+        for (RoomDoor const& otherDoor : GetRoomDoors(*other))
+        {
+            if (otherDoor.DirX != -door.DirX || otherDoor.DirY != -door.DirY || otherDoor.DirZ != -door.DirZ)
+                continue;
+
+            if (std::abs(otherDoor.X - door.X) > TOLERANCE || std::abs(otherDoor.Y - door.Y) > TOLERANCE)
+                continue;
+
+            if (outComponentId)
+                *outComponentId = otherDoor.ComponentId;
+            return other;
+        }
+    }
+
+    return nullptr;
+}
+
+bool Housing::OwnsDoorway(Room const& room, Room const& other)
+{
+    // Sniffed layout edits (12.1.0.69933): the room placed earlier (lower slot) carries the doorway piece, the entry
+    // hall included - a square room added on the entry got 739 on the entry side and only its wall (373) itself.
+    return room.SlotIndex < other.SlotIndex;
+}
+
+uint8 Housing::GetDoorwayVariant(Room const& room, uint32 componentId, Room const& other, uint32 otherComponentId)
+{
+    // SET_DOOR_TYPE writes both sides of a connection; older rows may carry it on one side only.
+    auto itr = room.DoorTypes.find(componentId);
+    if (itr != room.DoorTypes.end() && itr->second != 0)
+        return itr->second;
+    itr = other.DoorTypes.find(otherComponentId);
+    if (itr != other.DoorTypes.end() && itr->second != 0)
+        return itr->second;
+    return 2;
+}
+
+std::string Housing::SerializeDoorTypes(Room const& room)
+{
+    std::string result;
+    for (auto const& [componentId, variant] : room.DoorTypes)
+    {
+        if (!result.empty())
+            result += ',';
+        result += Trinity::StringFormat("{}:{}", componentId, uint32(variant));
+    }
+    return result;
+}
+
+void Housing::LoadDoorTypes(Room& room, std::string const& doorTypes)
+{
+    room.DoorTypes.clear();
+    for (std::string_view entry : Trinity::Tokenize(doorTypes, ',', false))
+    {
+        std::vector<std::string_view> parts = Trinity::Tokenize(entry, ':', false);
+        if (parts.size() != 2)
+            continue;
+
+        Optional<uint32> componentId = Trinity::StringTo<uint32>(parts[0]);
+        Optional<uint32> variant = Trinity::StringTo<uint32>(parts[1]);
+        if (componentId && variant && *variant)
+            room.DoorTypes[*componentId] = uint8(*variant);
+    }
+
+    // Rows written before per-door styles: the single (component, variant) pair
+    if (room.DoorTypeId && room.DoorSlot && !room.DoorTypes.contains(room.DoorTypeId))
+        room.DoorTypes[room.DoorTypeId] = room.DoorSlot;
+}
+
+std::string Housing::SerializeComponentStyles(Room const& room)
+{
+    // "componentId:themeId:textureId,..." - 0 where the slot keeps the surface default
+    std::map<uint32, std::pair<uint32, uint32>> styles;
+    for (auto const& [componentId, themeId] : room.ComponentThemes)
+        styles[componentId].first = themeId;
+    for (auto const& [componentId, textureId] : room.ComponentTextures)
+        styles[componentId].second = textureId;
+
+    std::string result;
+    for (auto const& [componentId, style] : styles)
+    {
+        if (!result.empty())
+            result += ',';
+        result += Trinity::StringFormat("{}:{}:{}", componentId, style.first, style.second);
+    }
+    return result;
+}
+
+void Housing::LoadComponentStyles(Room& room, std::string const& componentStyles)
+{
+    room.ComponentThemes.clear();
+    room.ComponentTextures.clear();
+    for (std::string_view entry : Trinity::Tokenize(componentStyles, ',', false))
+    {
+        std::vector<std::string_view> parts = Trinity::Tokenize(entry, ':', false);
+        if (parts.size() != 3)
+            continue;
+
+        Optional<uint32> componentId = Trinity::StringTo<uint32>(parts[0]);
+        Optional<uint32> themeId = Trinity::StringTo<uint32>(parts[1]);
+        Optional<uint32> textureId = Trinity::StringTo<uint32>(parts[2]);
+        if (!componentId)
+            continue;
+        if (themeId && *themeId)
+            room.ComponentThemes[*componentId] = *themeId;
+        if (textureId && *textureId)
+            room.ComponentTextures[*componentId] = *textureId;
+    }
+}
+
+bool Housing::RoomFits(std::vector<Room const*> const& rooms, uint32 roomEntryId, int32 gridX, int32 gridY, int32 floorIndex,
+    uint32 orientation, ObjectGuid ignoreRoom /*= ObjectGuid::Empty*/)
+{
+    auto getBox = [](uint32 entryId, int32 x, int32 y, uint32 turn, float& minX, float& minY, float& maxX, float& maxY)
+    {
+        HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(entryId);
+        RoomWmoDataEntry const* bounds = roomData && roomData->RoomWmoDataID ? sRoomWmoDataStore.LookupEntry(roomData->RoomWmoDataID) : nullptr;
+        if (!bounds)
+            return false;
+
+        float ax, ay, bx, by;
+        RotateRoomOffset(bounds->BoundingBoxMinX, bounds->BoundingBoxMinY, turn, ax, ay);
+        RotateRoomOffset(bounds->BoundingBoxMaxX, bounds->BoundingBoxMaxY, turn, bx, by);
+        minX = x + std::min(ax, bx);
+        maxX = x + std::max(ax, bx);
+        minY = y + std::min(ay, by);
+        maxY = y + std::max(ay, by);
+        return true;
+    };
+
+    float minX, minY, maxX, maxY;
+    if (!getBox(roomEntryId, gridX, gridY, orientation, minX, minY, maxX, maxY))
+        return true;
+
+    // Neighbouring walls stand on (almost) the same line.
+    constexpr float TOLERANCE = 0.5f;
+    for (Room const* other : rooms)
+    {
+        if (!other || other->Guid == ignoreRoom || other->FloorIndex != floorIndex)
+            continue;
+
+        float otherMinX, otherMinY, otherMaxX, otherMaxY;
+        if (!getBox(other->RoomEntryId, other->GridX, other->GridY, other->Orientation, otherMinX, otherMinY, otherMaxX, otherMaxY))
+            continue;
+
+        if (minX < otherMaxX - TOLERANCE && maxX > otherMinX + TOLERANCE && minY < otherMaxY - TOLERANCE && maxY > otherMinY + TOLERANCE)
+            return false;
+    }
+
+    return true;
+}
+
+bool Housing::FitRoomToDoor(std::vector<Room const*> const& rooms, uint32 roomEntryId, int32 floorIndex, RoomDoor const& target,
+    uint32 orientation, ObjectGuid ignoreRoom, int32& gridX, int32& gridY)
+{
+    if (target.IsVertical())
+        return false;
+
+    for (RoomDoor const& door : GetRoomDoors(roomEntryId, 0.0f, 0.0f, orientation))
+    {
+        if (door.IsVertical() || door.DirX != -target.DirX || door.DirY != -target.DirY)
+            continue;
+
+        int32 const x = int32(std::lround(target.X - door.X));
+        int32 const y = int32(std::lround(target.Y - door.Y));
+        if (!RoomFits(rooms, roomEntryId, x, y, floorIndex, orientation, ignoreRoom))
+            continue;
+
+        gridX = x;
+        gridY = y;
+        return true;
+    }
+
+    return false;
+}
+
+uint32 Housing::GetRoomWeightCost(uint32 roomEntryId, int32 gridX, int32 gridY, int32 floorIndex, ObjectGuid self) const
+{
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(roomEntryId);
+    if (roomData && roomData->HasStairs())
+    {
+        for (auto const& [guid, other] : _rooms)
+        {
+            if (guid == self || other.GridX != gridX || other.GridY != gridY || other.FloorIndex != floorIndex - 1)
+                continue;
+
+            HouseRoomData const* otherData = sHousingMgr.GetHouseRoomData(other.RoomEntryId);
+            if (otherData && otherData->HasStairs())
+                return 0;
+        }
+    }
+
+    return sHousingMgr.GetRoomWeightCost(roomEntryId);
+}
+
+Housing::Room const* Housing::FindStairwellPartner(Room const& room) const
+{
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
+    if (!roomData || !roomData->HasStairs())
+        return nullptr;
+
+    for (auto const& [guid, other] : _rooms)
+    {
+        if (guid == room.Guid || other.GridX != room.GridX || other.GridY != room.GridY || std::abs(other.FloorIndex - room.FloorIndex) != 1)
+            continue;
+
+        HouseRoomData const* otherData = sHousingMgr.GetHouseRoomData(other.RoomEntryId);
+        if (otherData && otherData->HasStairs())
+            return &other;
+    }
+
+    return nullptr;
 }
 
 HousingResult Housing::MoveRoom(ObjectGuid roomGuid, uint32 newSlotIndex, ObjectGuid swapRoomGuid, uint32 /*swapSlotIndex*/)
@@ -1825,53 +2270,42 @@ bool Housing::IsRoomGraphConnectedWithout(ObjectGuid excludeRoomGuid) const
     if (baseRoomGuid.IsEmpty() || baseRoomGuid == excludeRoomGuid)
         return false; // No base room available after exclusion
 
-    // Build slot-to-guid map for remaining rooms (excluding the removed one)
-    std::unordered_map<uint32 /*slotIndex*/, ObjectGuid> slotToRoom;
+    // Remaining rooms (the stairwell half stacked on the removed room goes with it)
+    std::vector<Room const*> remaining;
+    Room const* excluded = GetRoom(excludeRoomGuid);
+    Room const* excludedPartner = excluded ? FindStairwellPartner(*excluded) : nullptr;
     for (auto const& [guid, room] : _rooms)
-    {
-        if (guid != excludeRoomGuid)
-            slotToRoom[room.SlotIndex] = guid;
-    }
+        if (guid != excludeRoomGuid && (!excludedPartner || guid != excludedPartner->Guid))
+            remaining.push_back(&room);
 
-    // BFS from the base room through adjacent slots
-    // Adjacency: rooms with slot index difference of 1 are considered connected
-    // This is a simplified model; the client validates geometric doorway alignment
+    // BFS from the base room through rooms whose doors meet, plus the two halves of each stairwell
     std::unordered_set<ObjectGuid> visited;
-    std::queue<ObjectGuid> queue;
+    std::queue<Room const*> queue;
 
     visited.insert(baseRoomGuid);
-    queue.push(baseRoomGuid);
+    queue.push(GetRoom(baseRoomGuid));
 
     while (!queue.empty())
     {
-        ObjectGuid currentGuid = queue.front();
+        Room const* current = queue.front();
         queue.pop();
-
-        auto currentItr = _rooms.find(currentGuid);
-        if (currentItr == _rooms.end())
+        if (!current)
             continue;
 
-        uint32 currentSlot = currentItr->second.SlotIndex;
+        std::vector<Room const*> neighbours;
+        for (RoomDoor const& door : GetRoomDoors(*current))
+            if (Room const* other = FindRoomAtDoor(remaining, *current, door))
+                neighbours.push_back(other);
+        if (Room const* partner = FindStairwellPartner(*current))
+            neighbours.push_back(partner);
 
-        // Check adjacent slots (slot ± 1)
-        for (int32 offset : { -1, 1 })
-        {
-            uint32 adjacentSlot = currentSlot + offset;
-            // Guard against underflow for slot 0 with offset -1
-            if (offset < 0 && currentSlot == 0)
-                continue;
-
-            auto adjItr = slotToRoom.find(adjacentSlot);
-            if (adjItr != slotToRoom.end() && visited.find(adjItr->second) == visited.end())
-            {
-                visited.insert(adjItr->second);
-                queue.push(adjItr->second);
-            }
-        }
+        for (Room const* neighbour : neighbours)
+            if (std::find(remaining.begin(), remaining.end(), neighbour) != remaining.end() && visited.insert(neighbour->Guid).second)
+                queue.push(neighbour);
     }
 
     // All remaining rooms must be reachable from the base room
-    return visited.size() == slotToRoom.size();
+    return visited.size() == remaining.size();
 }
 
 HousingResult Housing::ApplyRoomTheme(ObjectGuid roomGuid, uint32 themeSetId, std::vector<uint32> const& optionIds)
@@ -1883,39 +2317,9 @@ HousingResult Housing::ApplyRoomTheme(ObjectGuid roomGuid, uint32 themeSetId, st
     if (itr == _rooms.end())
         return HOUSING_RESULT_ROOM_NOT_FOUND;
 
-    // Classify component IDs by surface type so walls/floors/ceilings can
-    // carry independent themes — otherwise dyeing the ceiling overwrites the
-    // wall theme (single-ThemeId field) and wall style appears to "not save".
-    bool anyWall = false, anyFloor = false, anyCeiling = false;
-    for (uint32 compId : optionIds)
-    {
-        RoomComponentEntry const* compEntry = sRoomComponentStore.LookupEntry(compId);
-        if (!compEntry)
-            continue;
-        switch (compEntry->Type)
-        {
-            case HOUSING_ROOM_COMPONENT_WALL:
-            case HOUSING_ROOM_COMPONENT_DOORWAY_WALL:
-                anyWall = true; break;
-            case HOUSING_ROOM_COMPONENT_FLOOR:
-                anyFloor = true; break;
-            case HOUSING_ROOM_COMPONENT_CEILING:
-                anyCeiling = true; break;
-            default: break;
-        }
-    }
-
-    if (anyWall)
-        itr->second.WallThemeId = themeSetId;
-    if (anyFloor)
-        itr->second.FloorThemeId = themeSetId;
-    if (anyCeiling)
-        itr->second.CeilingThemeId = themeSetId;
-    if (!anyWall && !anyFloor && !anyCeiling)
-        itr->second.WallThemeId = themeSetId;  // unclassified → wall default
-
-    // Keep the legacy single ThemeId in sync for callers that still read it.
-    itr->second.ThemeId = themeSetId;
+    // Only the named slots change (12.1.0.69933 sniff: a ceiling restyle recreates just that ceiling piece).
+    for (uint32 componentId : optionIds)
+        itr->second.ComponentThemes[componentId] = themeSetId;
 
     PersistRoomToDB(roomGuid, itr->second);
 
@@ -1943,52 +2347,17 @@ HousingResult Housing::ApplyRoomMaterial(ObjectGuid roomGuid, uint32 textureId, 
     if (itr == _rooms.end())
         return HOUSING_RESULT_ROOM_NOT_FOUND;
 
-    // Determine which surface type(s) the component IDs target and store per-type.
-    // The client sends RoomComponent DB2 IDs (not RoomComponentOption IDs).
-    bool anyWall = false, anyFloor = false, anyCeiling = false;
-    for (uint32 compId : optionIds)
-    {
-        RoomComponentEntry const* compEntry = sRoomComponentStore.LookupEntry(compId);
-        if (!compEntry)
-            continue;
-
-        switch (compEntry->Type)
-        {
-            case HOUSING_ROOM_COMPONENT_WALL:
-            case HOUSING_ROOM_COMPONENT_DOORWAY_WALL:
-                anyWall = true;
-                break;
-            case HOUSING_ROOM_COMPONENT_FLOOR:
-                anyFloor = true;
-                break;
-            case HOUSING_ROOM_COMPONENT_CEILING:
-                anyCeiling = true;
-                break;
-            default:
-                break;
-        }
-    }
-
-    // Store texture in the appropriate per-type field
-    if (anyWall)
-        itr->second.WallTextureId = textureId;
-    if (anyFloor)
-        itr->second.FloorTextureId = textureId;
-    if (anyCeiling)
-        itr->second.CeilingTextureId = textureId;
-
-    // If we couldn't classify any options (e.g., missing DB2 data), still apply as wall default
-    if (!anyWall && !anyFloor && !anyCeiling)
-        itr->second.WallTextureId = textureId;
+    // The client names RoomComponent DB2 IDs (not RoomComponentOption IDs); only those slots change.
+    for (uint32 componentId : optionIds)
+        itr->second.ComponentTextures[componentId] = textureId;
 
     itr->second.ColorOverride = colorOverride;
 
     PersistRoomToDB(roomGuid, itr->second);
 
     TC_LOG_DEBUG("housing", "Housing::ApplyRoomMaterial: Player {} applied texture {} (color {}) to room {} "
-        "({} options, wall={} floor={} ceiling={}) in house {}",
-        _owner->GetName(), textureId, colorOverride, roomGuid.ToString(),
-        optionIds.size(), anyWall, anyFloor, anyCeiling, _houseGuid.ToString());
+        "({} components) in house {}",
+        _owner->GetName(), textureId, colorOverride, roomGuid.ToString(), optionIds.size(), _houseGuid.ToString());
 
     // Account-level notification: material collection update
     if (_owner->GetSession())
@@ -2011,10 +2380,30 @@ HousingResult Housing::SetDoorType(ObjectGuid roomGuid, uint32 doorTypeId, uint8
     if (itr == _rooms.end())
         return HOUSING_RESULT_ROOM_NOT_FOUND;
 
-    itr->second.DoorTypeId = doorTypeId;
-    itr->second.DoorSlot = doorSlot;
+    // doorTypeId is the door's RoomComponent ID, doorSlot the doorway variant. One doorway is shared by the two
+    // rooms it joins, so the style goes to both sides.
+    auto setSide = [this](Room& room, uint32 componentId, uint8 variant)
+    {
+        room.DoorTypeId = componentId;
+        room.DoorSlot = variant;
+        room.DoorTypes[componentId] = variant;
+        PersistRoomToDB(room.Guid, room);
+    };
 
-    PersistRoomToDB(roomGuid, itr->second);
+    Room& room = itr->second;
+    setSide(room, doorTypeId, doorSlot);
+
+    std::vector<Room const*> rooms = GetRooms();
+    for (RoomDoor const& door : GetRoomDoors(room))
+    {
+        if (door.ComponentId != doorTypeId || door.IsVertical())
+            continue;
+
+        uint32 otherComponentId = 0;
+        if (Room const* other = FindRoomAtDoor(rooms, room, door, &otherComponentId))
+            setSide(_rooms[other->Guid], otherComponentId, doorSlot);
+        break;
+    }
 
     TC_LOG_DEBUG("housing", "Housing::SetDoorType: Player {} set door type {} (slot {}) on room {} in house {}",
         _owner->GetName(), doorTypeId, doorSlot, roomGuid.ToString(), _houseGuid.ToString());
@@ -2850,7 +3239,7 @@ void Housing::RecalculateBudgets()
     // Sum WeightCost of all placed rooms
     for (auto const& [guid, room] : _rooms)
     {
-        uint32 weightCost = sHousingMgr.GetRoomWeightCost(room.RoomEntryId);
+        uint32 weightCost = GetRoomWeightCost(room.RoomEntryId, room.GridX, room.GridY, room.FloorIndex, guid);
         _roomWeightUsed += weightCost;
     }
 
@@ -3047,6 +3436,10 @@ void Housing::SetHousePosition(float x, float y, float z, float facing)
     stmt->setUInt64(4, _owner->GetGUID().GetCounter());
     CharacterDatabase.Execute(stmt);
 
+    // Keep the neighborhood's mirror in step: it builds this house at map load when the owner is offline.
+    if (Neighborhood* neighborhood = sNeighborhoodMgr.GetNeighborhood(_neighborhoodGuid))
+        neighborhood->UpdatePlotHousePosition(_owner->GetGUID(), Position(x, y, z, facing));
+
     TC_LOG_DEBUG("housing", "Housing::SetHousePosition: Player {} positioned house at ({}, {}, {}, {}) in house {}",
         _owner->GetName(), x, y, z, facing, _houseGuid.ToString());
 }
@@ -3064,6 +3457,9 @@ void Housing::ResetHousePosition()
     stmt->setFloat(3, 0.0f);
     stmt->setUInt64(4, _owner->GetGUID().GetCounter());
     CharacterDatabase.Execute(stmt);
+
+    if (Neighborhood* neighborhood = sNeighborhoodMgr.GetNeighborhood(_neighborhoodGuid))
+        neighborhood->UpdatePlotHousePosition(_owner->GetGUID(), {});
 }
 
 void Housing::RelocateExteriorDecor(Position const& fromFrame, Position const& toFrame)
@@ -3142,6 +3538,8 @@ void Housing::PersistRoomToDB(ObjectGuid roomGuid, Room const& room)
     stmt->setUInt32(index++, room.WallThemeId);
     stmt->setUInt32(index++, room.FloorThemeId);
     stmt->setUInt32(index++, room.CeilingThemeId);
+    stmt->setString(index++, SerializeDoorTypes(room));
+    stmt->setString(index++, SerializeComponentStyles(room));
     stmt->setUInt64(index++, _owner->GetGUID().GetCounter());
     stmt->setUInt64(index++, roomGuid.GetCounter());
     CharacterDatabase.Execute(stmt);
@@ -3370,8 +3768,13 @@ void Housing::SetRoomAppearance(ObjectGuid roomGuid, Room const& appearance)
     room.ColorOverride = appearance.ColorOverride;
     room.DoorTypeId = appearance.DoorTypeId;
     room.DoorSlot = appearance.DoorSlot;
+    room.DoorTypes = appearance.DoorTypes;
+    if (appearance.DoorTypeId && appearance.DoorSlot)
+        room.DoorTypes[appearance.DoorTypeId] = appearance.DoorSlot;
     room.CeilingTypeId = appearance.CeilingTypeId;
     room.CeilingSlot = appearance.CeilingSlot;
+    room.ComponentThemes = appearance.ComponentThemes;
+    room.ComponentTextures = appearance.ComponentTextures;
     PersistRoomToDB(roomGuid, room);
 }
 

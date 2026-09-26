@@ -32,6 +32,8 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SocialMgr.h"
+#include "SpellMgr.h"
+#include "SpellScript.h"
 
 namespace
 {
@@ -44,6 +46,72 @@ namespace
     constexpr float INTERIOR_SPAWN_Y = -1000.0f;
     constexpr float INTERIOR_SPAWN_Z = 0.1f;
     constexpr float INTERIOR_SPAWN_O = 0.0f;
+}
+
+// Sends a player standing in a house interior out to the plot's TeleportPosition (next to the cornerstone), where retail
+// puts them too (12.1.0.69933 sniff: SMSG_NEW_WORLD at NeighborhoodPlot.TeleportPosition after "Leave House").
+static void TeleportOutOfHouseInterior(Player* player, HouseInteriorMap* interiorMap)
+{
+    // Resolve the exit based on the HOUSE this interior belongs to,
+    // not on the player's own housing. When a visitor exits a
+    // neighbour's house the destination plot is the house owner's
+    // plot, not the visitor's.
+    ObjectGuid houseOwner = interiorMap->GetOwnerGuid();
+    Neighborhood* nbh = nullptr;
+    uint8 ownerPlotIndex = INVALID_PLOT_INDEX;
+    for (Neighborhood* cand : sNeighborhoodMgr.GetNeighborhoodsForPlayer(houseOwner))
+    {
+        for (Neighborhood::PlotInfo const& plot : cand->GetPlots())
+        {
+            if (plot.OwnerGuid == houseOwner && plot.IsOccupied())
+            {
+                nbh = cand;
+                ownerPlotIndex = plot.PlotIndex;
+                break;
+            }
+        }
+        if (nbh)
+            break;
+    }
+
+    // Fall back to the visitor's own housing when the owner lookup
+    // fails (shouldn't happen — the owner exists by construction
+    // since the interior map was created for them).
+    if (!nbh)
+    {
+        if (Housing* own = player->GetHousing())
+        {
+            nbh = sNeighborhoodMgr.GetNeighborhood(own->GetNeighborhoodGuid());
+            ownerPlotIndex = own->GetPlotIndex();
+        }
+    }
+
+    uint32 destMapId = nbh ? sHousingMgr.GetWorldMapIdByNeighborhoodMapId(nbh->GetNeighborhoodMapID()) : 2735;
+    if (destMapId == 0)
+        destMapId = 2735;
+
+    // Use TeleportPosition (the safe player spawn point above ground),
+    // NOT HousePosition — HousePosition is where the house WMO root
+    // sits, which is often at ground level or below, so teleporting
+    // there drops the player under the map.
+    uint32 nbhMapId = nbh ? nbh->GetNeighborhoodMapID() : 2;
+    std::vector<NeighborhoodPlotData const*> plots = sHousingMgr.GetPlotsForMap(nbhMapId);
+    float exitX = 0, exitY = 0, exitZ = 0;
+    for (NeighborhoodPlotData const* plot : plots)
+    {
+        if (plot->PlotIndex == static_cast<int32>(ownerPlotIndex))
+        {
+            exitX = plot->TeleportPosition[0];
+            exitY = plot->TeleportPosition[1];
+            exitZ = plot->TeleportPosition[2];
+            break;
+        }
+    }
+
+    TC_LOG_DEBUG("housing", "go_housing_door: Teleporting {} from interior (owner {}) to map {} plot {} at ({:.1f},{:.1f},{:.1f})",
+        player->GetGUID().ToString(), houseOwner.ToString(), destMapId, ownerPlotIndex, exitX, exitY, exitZ);
+
+    player->TeleportTo(destMapId, exitX, exitY, exitZ, player->GetOrientation());
 }
 
 // Script for the housing front door GO (entry 602702).
@@ -64,70 +132,15 @@ public:
             if (!player || !player->IsInWorld())
                 return true;
 
-            // Check if we're on the INTERIOR map — teleport back to exterior
-            HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(me->GetMap());
-            if (interiorMap)
+            // Interior side: retail leaves through spell 1234193 ("Leave House", effect 343) cast right after the door
+            // opens; the client runs its own house-exit cleanup (editor camera included) off that cast. The
+            // teleport itself is done by spell_housing_leave_house.
+            if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(me->GetMap()))
             {
-                // Resolve the exit based on the HOUSE this interior belongs to,
-                // not on the player's own housing. When a visitor exits a
-                // neighbour's house the destination plot is the house owner's
-                // plot, not the visitor's.
-                ObjectGuid houseOwner = interiorMap->GetOwnerGuid();
-                Neighborhood* nbh = nullptr;
-                uint8 ownerPlotIndex = INVALID_PLOT_INDEX;
-                for (Neighborhood* cand : sNeighborhoodMgr.GetNeighborhoodsForPlayer(houseOwner))
-                {
-                    for (Neighborhood::PlotInfo const& plot : cand->GetPlots())
-                    {
-                        if (plot.OwnerGuid == houseOwner && plot.IsOccupied())
-                        {
-                            nbh = cand;
-                            ownerPlotIndex = plot.PlotIndex;
-                            break;
-                        }
-                    }
-                    if (nbh)
-                        break;
-                }
-
-                // Fall back to the visitor's own housing when the owner lookup
-                // fails (shouldn't happen — the owner exists by construction
-                // since the interior map was created for them).
-                if (!nbh)
-                {
-                    if (Housing* own = player->GetHousing())
-                    {
-                        nbh = sNeighborhoodMgr.GetNeighborhood(own->GetNeighborhoodGuid());
-                        ownerPlotIndex = own->GetPlotIndex();
-                    }
-                }
-
-                uint32 destMapId = nbh ? sHousingMgr.GetWorldMapIdByNeighborhoodMapId(nbh->GetNeighborhoodMapID()) : 2735;
-                if (destMapId == 0)
-                    destMapId = 2735;
-
-                // Use TeleportPosition (the safe player spawn point above ground),
-                // NOT HousePosition — HousePosition is where the house WMO root
-                // sits, which is often at ground level or below, so teleporting
-                // there drops the player under the map.
-                uint32 nbhMapId = nbh ? nbh->GetNeighborhoodMapID() : 2;
-                std::vector<NeighborhoodPlotData const*> plots = sHousingMgr.GetPlotsForMap(nbhMapId);
-                float exitX = 0, exitY = 0, exitZ = 0;
-                for (NeighborhoodPlotData const* plot : plots)
-                {
-                    if (plot->PlotIndex == static_cast<int32>(ownerPlotIndex))
-                    {
-                        exitX = plot->TeleportPosition[0];
-                        exitY = plot->TeleportPosition[1];
-                        exitZ = plot->TeleportPosition[2];
-                        break;
-                    }
-                }
-
-                TC_LOG_DEBUG("housing", "go_housing_door: Teleporting {} from interior (owner {}) to map {} plot {} at ({:.1f},{:.1f},{:.1f})",
-                    player->GetGUID().ToString(), houseOwner.ToString(), destMapId, ownerPlotIndex, exitX, exitY, exitZ);
-
-                player->TeleportTo(destMapId, exitX, exitY, exitZ, player->GetOrientation());
+                if (sSpellMgr->GetSpellInfo(SPELL_HOUSING_LEAVE_HOUSE, DIFFICULTY_NONE))
+                    player->CastSpell(player, SPELL_HOUSING_LEAVE_HOUSE, true);
+                else
+                    TeleportOutOfHouseInterior(player, interiorMap);
                 return true;
             }
 
@@ -261,7 +274,27 @@ public:
     }
 };
 
+// 1234193 - Leave House
+class spell_housing_leave_house : public SpellScript
+{
+    void HandleLeave(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetHitUnit() ? GetHitUnit()->ToPlayer() : nullptr;
+        if (!player)
+            return;
+
+        if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(player->GetMap()))
+            TeleportOutOfHouseInterior(player, interiorMap);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_housing_leave_house::HandleLeave, EFFECT_0, SPELL_EFFECT_343);
+    }
+};
+
 void AddSC_go_housing_door()
 {
     new go_housing_door();
+    RegisterSpellScript(spell_housing_leave_house);
 }

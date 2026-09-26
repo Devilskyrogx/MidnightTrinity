@@ -121,6 +121,13 @@ bool Neighborhood::LoadFromDB(PreparedQueryResult neighborhood, PreparedQueryRes
                     _plots[member.PlotIndex].HouseType  = memberFields[9].GetUInt32();
                 if (!memberFields[10].IsNull())
                     _plots[member.PlotIndex].HouseSettingsFlags = memberFields[10].GetUInt32();
+                // All-zero coordinates mean "no custom position" (Housing::LoadFromDB does the same)
+                if (!memberFields[11].IsNull())
+                {
+                    Position housePos(memberFields[11].GetFloat(), memberFields[12].GetFloat(), memberFields[13].GetFloat(), memberFields[14].GetFloat());
+                    if (housePos.GetPositionX() != 0.0f || housePos.GetPositionY() != 0.0f || housePos.GetPositionZ() != 0.0f)
+                        _plots[member.PlotIndex].HousePosition = housePos;
+                }
 
                 TC_LOG_INFO("housing", "Neighborhood::LoadFromDB plot[{}] owner={} lvl={} favor={} name='{}' "
                     "(ch.houseLevel.IsNull={} ch.favor.IsNull={} ch.houseName.IsNull={})",
@@ -281,6 +288,8 @@ bool Neighborhood::LoadFromDB(PreparedQueryResult neighborhood, PreparedQueryRes
             room.WallThemeId      = r[18].GetUInt32();
             room.FloorThemeId     = r[19].GetUInt32();
             room.CeilingThemeId   = r[20].GetUInt32();
+            Housing::LoadDoorTypes(room, r[21].GetString());
+            Housing::LoadComponentStyles(room, r[22].GetString());
             plot->Rooms.push_back(std::move(room));
             ++roomCount;
         } while (memberRooms->NextRow());
@@ -1093,6 +1102,18 @@ void Neighborhood::UpdatePlotHouseInfo(uint8 plotIndex, ObjectGuid houseGuid, Ob
 
     TC_LOG_DEBUG("housing", "Neighborhood::UpdatePlotHouseInfo: Plot {} updated with HouseGuid {} and BnetGuid {} in neighborhood '{}'",
         plotIndex, houseGuid.ToString(), ownerBnetGuid.ToString(), _name);
+}
+
+void Neighborhood::UpdatePlotHousePosition(ObjectGuid ownerGuid, Optional<Position> const& housePosition)
+{
+    for (PlotInfo& plot : _plots)
+    {
+        if (plot.IsOccupied() && plot.OwnerGuid == ownerGuid)
+        {
+            plot.HousePosition = housePosition;
+            return;
+        }
+    }
 }
 
 void Neighborhood::UpdatePlotSettingsFlags(ObjectGuid ownerGuid, uint32 settingsFlags)

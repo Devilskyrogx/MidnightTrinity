@@ -43,6 +43,7 @@
 #include "RealmList.h"
 #include "World.h"
 #include "WorldSession.h"
+#include <algorithm>
 
 HouseInteriorMap::HouseInteriorMap(uint32 id, time_t expiry, uint32 instanceId, ObjectGuid const& owner)
     : Map(id, expiry, instanceId, DIFFICULTY_NORMAL),
@@ -111,6 +112,253 @@ void HouseInteriorMap::SpawnRoomMeshObjects(Housing* housing, int32 factionRestr
     SpawnRoomMeshObjectsFromList(housing->GetRooms(), factionRestriction, housing->GetHouseGuid());
 }
 
+Position HouseInteriorMap::GetRoomWorldPosition(Housing::Room const& room) const
+{
+    // GridX/GridY = yard offsets. FloorIndex = floor NUMBER (0=ground, 1=floor2, …).
+    // Sniff-verified: retail HousingRoomEntity.FloorIndex is a small integer
+    // used by the client's floor selector UI, while world Z is computed as
+    // FloorIndex × 12 yards (confirmed by positions at Z=0.1, 12.1, 24.1).
+    static constexpr float FLOOR_HEIGHT_Y = 12.0f;
+    return Position(_originX + static_cast<float>(room.GridX), _originY + static_cast<float>(room.GridY),
+        _originZ + static_cast<float>(room.FloorIndex) * FLOOR_HEIGHT_Y, static_cast<float>(room.Orientation) * float(M_PI / 2.0));
+}
+
+std::unordered_map<uint32, HouseInteriorMap::DoorwayState> HouseInteriorMap::GetDoorwayStates(
+    std::vector<Housing::Room const*> const& rooms, Housing::Room const& room)
+{
+    std::unordered_map<uint32, DoorwayState> states;
+    for (Housing::RoomDoor const& door : Housing::GetRoomDoors(room))
+    {
+        if (door.IsVertical())
+            continue; // stairwell floor/ceiling: a link, not a doorway
+
+        uint32 otherComponentId = 0;
+        Housing::Room const* other = Housing::FindRoomAtDoor(rooms, room, door, &otherComponentId);
+        if (!other)
+            continue;
+
+        DoorwayState& state = states[door.ComponentId];
+        state.AttachedRoom = other->Guid;
+        state.Owner = Housing::OwnsDoorway(room, *other);
+        state.Variant = Housing::GetDoorwayVariant(room, door.ComponentId, *other, otherComponentId);
+    }
+    return states;
+}
+
+int32 HouseInteriorMap::GetComponentThemeID(Housing::Room const& room, RoomComponentData const& comp, int32 factionThemeID)
+{
+    // The slot's own theme first, then the per-surface theme older rows carry, the legacy single ThemeId, the faction.
+    auto itr = room.ComponentThemes.find(comp.ID);
+    if (itr != room.ComponentThemes.end() && itr->second)
+        return static_cast<int32>(itr->second);
+
+    uint32 perSurfaceTheme = 0;
+    switch (comp.Type)
+    {
+        case HOUSING_ROOM_COMPONENT_WALL:
+        case HOUSING_ROOM_COMPONENT_DOORWAY_WALL:
+            perSurfaceTheme = room.WallThemeId;
+            break;
+        case HOUSING_ROOM_COMPONENT_FLOOR:
+            perSurfaceTheme = room.FloorThemeId;
+            break;
+        case HOUSING_ROOM_COMPONENT_CEILING:
+            perSurfaceTheme = room.CeilingThemeId;
+            break;
+        default:
+            break;
+    }
+    return perSurfaceTheme ? static_cast<int32>(perSurfaceTheme)
+        : (room.ThemeId != 0 ? static_cast<int32>(room.ThemeId) : factionThemeID);
+}
+
+int32 HouseInteriorMap::GetComponentHouseThemeID(Housing::Room const& room, RoomComponentData const& comp, RoomComponentOptionEntry const* option)
+{
+    // HouseThemeID carries the chosen sub-theme (retail: 10 "Bel'ameth (neutral)" on an option of base theme 4).
+    int32 chosenTheme = GetComponentThemeID(room, comp, 0);
+    if (chosenTheme > 0 && (chosenTheme == static_cast<int32>(option->HouseThemeID)
+        || sHousingMgr.GetBaseThemeID(chosenTheme) == static_cast<int32>(option->HouseThemeID)))
+        return chosenTheme;
+    return sHousingMgr.GetDefaultSubThemeID(option->HouseThemeID);
+}
+
+std::vector<RoomComponentOptionEntry const*> HouseInteriorMap::SelectComponentOptions(Housing::Room const& room,
+    RoomComponentData const& comp, int32 factionThemeID, DoorwayState const* doorway)
+{
+    int32 rawTheme = GetComponentThemeID(room, comp, factionThemeID);
+    // RoomComponentOption rows only exist for base themes (1-5). The stored
+    // per-surface themes are usually sub-themes (e.g. 11=Bel'ameth Folk,
+    // 20=Folk Light) — resolve them to the parent base theme or the lookup
+    // falls through to the faction default and the user's style is lost.
+    int32 lookupTheme = sHousingMgr.GetBaseThemeID(rawTheme);
+    if (lookupTheme <= 0)
+        lookupTheme = rawTheme;
+    std::vector<RoomComponentOptionEntry const*> allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, lookupTheme);
+    if (allOptions.empty())
+        allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, factionThemeID);
+    if (allOptions.empty() && factionThemeID != 2)
+        allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, 2);
+    if (allOptions.empty() && factionThemeID != 1)
+        allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, 1);
+
+    std::sort(allOptions.begin(), allOptions.end(), [](RoomComponentOptionEntry const* a, RoomComponentOptionEntry const* b) { return a->ID < b->ID; });
+
+    // One slot, one look (retail 12.1.0.69933). RoomComponentOption.RoomComponentID is the variant of a slot
+    // (doorway style, ceiling shape, stair model):
+    //   - a connected door: the side owning the doorway gets the DoorwayWall + Doorway pieces of the connection's
+    //     variant, the other side only the DoorwayWall of that variant - often nothing, the doorway fills the gap;
+    //   - anything else: a single Cosmetic piece of the chosen variant.
+    std::vector<RoomComponentOptionEntry const*> selected;
+    if (doorway)
+    {
+        for (RoomComponentOptionEntry const* option : allOptions)
+        {
+            if (option->RoomComponentID != doorway->Variant)
+                continue;
+            if (option->Type == HOUSING_ROOM_COMPONENT_OPTION_DOORWAY_WALL
+                || (doorway->Owner && option->Type == HOUSING_ROOM_COMPONENT_OPTION_DOORWAY))
+                selected.push_back(option);
+        }
+        return selected;
+    }
+
+    int32 variant = 0;
+    if (comp.Type == HOUSING_ROOM_COMPONENT_CEILING && room.CeilingTypeId == comp.ID)
+        variant = room.CeilingSlot;
+    else if (comp.Type == HOUSING_ROOM_COMPONENT_STAIRS)
+        variant = 1; // sniffed stairwell: stairs piece 432 (variant 1)
+
+    // Every Cosmetic piece of that variant that has its own model: a small square room's corners are 325 + 562 in
+    // retail, while a stair floor's model-less 729 is left out next to 437. Fall back to variant 0; failing that a
+    // single piece (a model-less one takes the component's own model, see CreateRoomComponentMesh).
+    auto collect = [&](int32 wantedVariant)
+    {
+        for (RoomComponentOptionEntry const* option : allOptions)
+            if (option->Type == HOUSING_ROOM_COMPONENT_OPTION_COSMETIC && option->ModelFileDataID > 0
+                && option->RoomComponentID == wantedVariant)
+                selected.push_back(option);
+    };
+    collect(variant);
+    if (selected.empty() && variant != 0)
+        collect(0);
+    if (selected.size() > 1 && comp.MeshStyleFilterID == 0)
+        selected.resize(1); // unfiltered style: the options are alternatives, not pieces
+    if (selected.empty())
+    {
+        RoomComponentOptionEntry const* fallback = nullptr;
+        for (RoomComponentOptionEntry const* option : allOptions)
+            if (option->Type == HOUSING_ROOM_COMPONENT_OPTION_COSMETIC && (!fallback || (fallback->ModelFileDataID <= 0 && option->ModelFileDataID > 0)))
+                fallback = option;
+        if (fallback)
+            selected.push_back(fallback);
+    }
+    return selected;
+}
+
+MeshObject* HouseInteriorMap::CreateRoomComponentMesh(Housing::Room const& room, RoomComponentData const& comp,
+    RoomComponentOptionEntry const* option, Position const& roomPos)
+{
+    int32 compFileDataID = option->ModelFileDataID > 0 ? option->ModelFileDataID : comp.ModelFileDataID;
+    if (compFileDataID <= 0)
+        return nullptr; // No model for this option
+
+    // Component position/rotation: local to room entity
+    Position compPos(comp.OffsetPos[0], comp.OffsetPos[1], comp.OffsetPos[2], 0.0f);
+    QuaternionData compRot;
+    // DB2 OffsetRot is in DEGREES — convert to radians. Z is negated (sniff-verified).
+    static constexpr float DEG_TO_RAD = static_cast<float>(M_PI / 180.0);
+    float rx = comp.OffsetRot[0] * DEG_TO_RAD;
+    float ry = comp.OffsetRot[1] * DEG_TO_RAD;
+    float rz = -comp.OffsetRot[2] * DEG_TO_RAD; // negated (sniff-verified)
+    float cx = std::cos(rx / 2.0f), sx = std::sin(rx / 2.0f);
+    float cy = std::cos(ry / 2.0f), sy = std::sin(ry / 2.0f);
+    float cz = std::cos(rz / 2.0f), sz = std::sin(rz / 2.0f);
+    compRot.x = sx * cy * cz - cx * sy * sz;
+    compRot.y = cx * sy * cz + sx * cy * sz;
+    compRot.z = cx * cy * sz - sx * sy * cz;
+    compRot.w = cx * cy * cz + sx * sy * sz;
+
+    // RoomWmoData → Geobox bounds (bounding box for OutsidePlotBounds check)
+    float geoMinX = -35.0f, geoMinY = -30.0f, geoMinZ = -1.01f;
+    float geoMaxX =  35.0f, geoMaxY =  30.0f, geoMaxZ = 125.01f;
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
+    if (RoomWmoDataEntry const* wmoData = roomData && roomData->RoomWmoDataID ? sRoomWmoDataStore.LookupEntry(roomData->RoomWmoDataID) : nullptr)
+    {
+        geoMinX = wmoData->BoundingBoxMinX;
+        geoMinY = wmoData->BoundingBoxMinY;
+        geoMinZ = wmoData->BoundingBoxMinZ;
+        geoMaxX = wmoData->BoundingBoxMaxX;
+        geoMaxY = wmoData->BoundingBoxMaxY;
+        geoMaxZ = wmoData->BoundingBoxMaxZ;
+    }
+
+    int32 roomComponentOptionID = static_cast<int32>(option->ID);
+    int32 houseThemeID = GetComponentHouseThemeID(room, comp, option);
+
+    // Material: the slot's own, else the per-surface one older rows carry
+    int32 roomComponentTextureID = 0;
+    uint32 storedTexture = 0;
+    auto textureItr = room.ComponentTextures.find(comp.ID);
+    if (textureItr != room.ComponentTextures.end())
+        storedTexture = textureItr->second;
+    else
+    {
+        switch (comp.Type)
+        {
+            case HOUSING_ROOM_COMPONENT_WALL:
+            case HOUSING_ROOM_COMPONENT_DOORWAY_WALL:
+                storedTexture = room.WallTextureId;
+                break;
+            case HOUSING_ROOM_COMPONENT_FLOOR:
+                storedTexture = room.FloorTextureId;
+                break;
+            case HOUSING_ROOM_COMPONENT_CEILING:
+                storedTexture = room.CeilingTextureId;
+                break;
+            default:
+                break;
+        }
+    }
+    if (storedTexture != 0)
+        roomComponentTextureID = static_cast<int32>(storedTexture);
+    else
+    {
+        roomComponentTextureID = sHousingMgr.GetTextureIdForComponentOption(roomComponentOptionID);
+        if (roomComponentTextureID == 0)
+            roomComponentTextureID = sHousingMgr.GetTextureIdForComponentType(comp.Type);
+        if (roomComponentTextureID == 0)
+        {
+            switch (comp.Type)
+            {
+                case 1: roomComponentTextureID = 24; break;
+                case 2: roomComponentTextureID = 40; break;
+                case 3: roomComponentTextureID = 54; break;
+                default: break;
+            }
+        }
+    }
+
+    MeshObject* componentMesh = MeshObject::CreateMeshObject(this, compPos, compRot, 1.0f,
+        compFileDataID, /*isWMO*/ true, room.Guid, /*attachFlags*/ 3, &roomPos);
+    if (!componentMesh)
+    {
+        TC_LOG_ERROR("housing", "HouseInteriorMap::CreateRoomComponentMesh: CreateMeshObject failed for component "
+            "(compID={}, option={}, fileDataID={}, roomEntry={})", comp.ID, option->ID, compFileDataID, room.RoomEntryId);
+        return nullptr;
+    }
+
+    PhasingHandler::InitDbPhaseShift(componentMesh->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
+    // Sniff: Field_20 = option Type, RoomComponentTypeParam = option variant (739 → 2, 366 → 1, 329 → 0).
+    componentMesh->InitHousingRoomComponentData(room.Guid,
+        roomComponentOptionID, static_cast<int32>(comp.ID),
+        comp.Type, static_cast<int32>(option->SubType), static_cast<uint8>(option->Type),
+        houseThemeID, roomComponentTextureID,
+        /*roomComponentTypeParam*/ option->RoomComponentID,
+        geoMinX, geoMinY, geoMinZ,
+        geoMaxX, geoMaxY, geoMaxZ);
+    return componentMesh;
+}
+
 void HouseInteriorMap::SpawnRoomMeshObjectsFromList(std::vector<Housing::Room const*> const& rooms, int32 factionRestriction, ObjectGuid houseGuid)
 {
     if (rooms.empty())
@@ -124,76 +372,21 @@ void HouseInteriorMap::SpawnRoomMeshObjectsFromList(std::vector<Housing::Room co
     int32 factionThemeID = sHousingMgr.GetFactionDefaultThemeID(factionRestriction);
     uint32 totalMeshes = 0;
 
-    // Build position→GUID mapping for door connection resolution.
-    // Key encodes yard position: (gridX+10000)*100000 + (gridY+10000)
-    auto posKey = [](int32 gx, int32 gy) -> uint64 { return uint64(gx + 10000) * 100000ULL + uint64(gy + 10000); };
-    std::unordered_map<uint64, ObjectGuid> posToRoomGuid;
-    for (Housing::Room const* r : rooms)
-        posToRoomGuid[posKey(r->GridX, r->GridY)] = r->Guid;
-
-    // Local GUID→room map used by the parent-side-of-a-door check below. Built
-    // from the passed-in rooms vector so this function no longer depends on a
-    // live `Housing` object (it's also called from the offline-owner visit path).
-    std::unordered_map<ObjectGuid, Housing::Room const*> roomByGuid;
-    for (Housing::Room const* r : rooms)
-        roomByGuid[r->Guid] = r;
-
-    // Helper: find the room DIRECTLY adjacent across this door's wall.
-    // A neighbor qualifies only if it's aligned on the perpendicular axis AND
-    // is the NEAREST room in the door's direction. Otherwise walls facing a
-    // general direction would claim non-adjacent rooms as neighbors, producing
-    // phantom door entries (client then refuses room removal with "more than
-    // one connected doors").
-    auto findNeighborAtDoor = [&](Housing::Room const* srcRoom, float doorOffX, float doorOffY) -> ObjectGuid
-    {
-        // Alignment tolerance (yards). Rooms are on a ~15yd grid, so same-axis
-        // rooms should share GridX or GridY within a small epsilon.
-        constexpr int32 ALIGN_TOLERANCE = 8; // half of minimum room width
-        constexpr int32 FLOOR_TOLERANCE = 0; // rooms on different floors don't share doors
-
-        ObjectGuid bestGuid;
-        int32 bestDistance = std::numeric_limits<int32>::max();
-
-        for (Housing::Room const* other : rooms)
-        {
-            if (other->Guid == srcRoom->Guid)
-                continue;
-            // Skip rooms on different floors — stacked stairwell partners sit at
-            // the same XY but different Z, and horizontal door-matching must stay
-            // per-floor so upper walls aren't replaced with doorways pointing at
-            // lower-floor neighbors.
-            if (std::abs(other->FloorIndex - srcRoom->FloorIndex) > FLOOR_TOLERANCE)
-                continue;
-            int32 dx = other->GridX - srcRoom->GridX;
-            int32 dy = other->GridY - srcRoom->GridY;
-
-            // East/West wall: neighbor must be aligned on Y and in the X direction
-            if (doorOffX > 0.5f && dx > 0 && std::abs(dy) <= ALIGN_TOLERANCE)
-            {
-                if (dx < bestDistance) { bestDistance = dx; bestGuid = other->Guid; }
-            }
-            else if (doorOffX < -0.5f && dx < 0 && std::abs(dy) <= ALIGN_TOLERANCE)
-            {
-                if (-dx < bestDistance) { bestDistance = -dx; bestGuid = other->Guid; }
-            }
-            // North/South wall: neighbor must be aligned on X and in the Y direction
-            else if (doorOffY > 0.5f && dy > 0 && std::abs(dx) <= ALIGN_TOLERANCE)
-            {
-                if (dy < bestDistance) { bestDistance = dy; bestGuid = other->Guid; }
-            }
-            else if (doorOffY < -0.5f && dy < 0 && std::abs(dx) <= ALIGN_TOLERANCE)
-            {
-                if (-dy < bestDistance) { bestDistance = -dy; bestGuid = other->Guid; }
-            }
-        }
-        return bestGuid;
-    };
-
     TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: Starting spawn for {} rooms "
         "(owner={}, factionThemeID={}, houseGuid={})",
         uint32(rooms.size()), _owner.ToString(), factionThemeID, houseGuid.ToString());
 
-    for (Housing::Room const* room : rooms)
+    // Upper floors first, as retail sends a new stairwell (12.1.0.69933 sniff: the upper half's CREATE precedes the
+    // lower half's). Every room reaches the client in its own packet here, and the client prices the stairwell once
+    // only when the lower half, linking up through its ceiling, finds the upper one already known - built bottom-up
+    // the room budget showed it twice until the editor was reopened.
+    std::vector<Housing::Room const*> spawnOrder(rooms.begin(), rooms.end());
+    std::stable_sort(spawnOrder.begin(), spawnOrder.end(), [](Housing::Room const* a, Housing::Room const* b)
+    {
+        return a->FloorIndex != b->FloorIndex ? a->FloorIndex > b->FloorIndex : a->SlotIndex < b->SlotIndex;
+    });
+
+    for (Housing::Room const* room : spawnOrder)
     {
         // Skip rooms that already have entities on the map (incremental spawn for room add).
         if (_roomMeshObjects.count(room->Guid) > 0)
@@ -208,32 +401,7 @@ void HouseInteriorMap::SpawnRoomMeshObjectsFromList(std::vector<Housing::Room co
             continue;
         }
 
-        // --- DB2 lookups ---
-
-        // 1. HouseRoom → RoomWmoDataID
         int32 roomWmoDataID = roomData->RoomWmoDataID;
-
-        // 2. RoomWmoData → Geobox bounds (bounding box for OutsidePlotBounds check)
-        float geoMinX = -35.0f, geoMinY = -30.0f, geoMinZ = -1.01f;
-        float geoMaxX =  35.0f, geoMaxY =  30.0f, geoMaxZ = 125.01f;
-        RoomWmoDataEntry const* wmoData = roomWmoDataID ? sRoomWmoDataStore.LookupEntry(roomWmoDataID) : nullptr;
-        if (wmoData)
-        {
-            geoMinX = wmoData->BoundingBoxMinX;
-            geoMinY = wmoData->BoundingBoxMinY;
-            geoMinZ = wmoData->BoundingBoxMinZ;
-            geoMaxX = wmoData->BoundingBoxMaxX;
-            geoMaxY = wmoData->BoundingBoxMaxY;
-            geoMaxZ = wmoData->BoundingBoxMaxZ;
-        }
-        else
-        {
-            TC_LOG_WARN("housing", "HouseInteriorMap::SpawnRoomMeshObjects: No RoomWmoData for "
-                "roomWmoDataID={} (room entry {}), using fallback geobox (-35,-30,-1.01)->(35,30,125.01)",
-                roomWmoDataID, room->RoomEntryId);
-        }
-
-        // 3. Get ALL components for this room
         std::vector<RoomComponentData> const* components = sHousingMgr.GetRoomComponents(roomWmoDataID);
         if (!components || components->empty())
         {
@@ -243,325 +411,79 @@ void HouseInteriorMap::SpawnRoomMeshObjectsFromList(std::vector<Housing::Room co
             continue;
         }
 
-        TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: Room '{}' entry={} slot={} "
-            "roomWmoDataID={} has {} components, geobox=({:.2f},{:.2f},{:.2f})->({:.2f},{:.2f},{:.2f})",
-            roomData->Name, room->RoomEntryId, room->SlotIndex,
-            roomWmoDataID, uint32(components->size()),
-            geoMinX, geoMinY, geoMinZ, geoMaxX, geoMaxY, geoMaxZ);
+        Position roomPos = GetRoomWorldPosition(*room);
+        QuaternionData roomRot = QuaternionData::fromEulerAnglesZYX(roomPos.GetOrientation(), 0.0f, 0.0f);
 
-        // --- Calculate room world position ---
-        // GridX/GridY = yard offsets. FloorIndex = floor NUMBER (0=ground, 1=floor2, …).
-        // Sniff-verified: retail HousingRoomEntity.FloorIndex is a small integer
-        // used by the client's floor selector UI, while world Z is computed as
-        // FloorIndex × 12 yards (confirmed by positions at Z=0.1, 12.1, 24.1).
-        static constexpr float FLOOR_HEIGHT_Y = 12.0f;
-        float roomX = _originX + static_cast<float>(room->GridX);
-        float roomY = _originY + static_cast<float>(room->GridY);
-        float roomZ = _originZ + static_cast<float>(room->FloorIndex) * FLOOR_HEIGHT_Y;
-        float roomFacing = static_cast<float>(room->Orientation) * (M_PI / 2.0f);
-
-        Position roomPos(roomX, roomY, roomZ, roomFacing);
-        QuaternionData roomRot;
-        roomRot.x = 0.0f;
-        roomRot.y = 0.0f;
-        roomRot.z = std::sin(roomFacing / 2.0f);
-        roomRot.w = std::cos(roomFacing / 2.0f);
-
-        LoadGrid(roomX, roomY);
+        LoadGrid(roomPos.GetPositionX(), roomPos.GetPositionY());
 
         // Lock the grid so it never unloads while the interior is active
-        GridCoord roomGrid = Trinity::ComputeGridCoord(roomX, roomY);
+        GridCoord roomGrid = Trinity::ComputeGridCoord(roomPos.GetPositionX(), roomPos.GetPositionY());
         GridMarkNoUnload(roomGrid.x_coord, roomGrid.y_coord);
 
-        int32 roomFlags = roomData->IsBaseRoom() ? 1 : 0;
-        int32 floorIndex = room->FloorIndex;
-        ObjectGuid roomHousingGuid = room->Guid; // Housing/2 GUID for attach parent
-
-        // --- Phase 1: Create HousingRoomEntity FIRST ---
-        // Must exist on the map BEFORE component MeshObjects because components use
-        // AttachParentGUID = roomHousingGuid. The client resolves this GUID during
-        // entity creation — if the parent doesn't exist, it crashes (NULL+0x20).
-        // Door data is added after components are created (Phase 3).
+        // --- Phase 1: HousingRoomEntity ---
+        // It must reach the client BEFORE its component MeshObjects, which use AttachParentGUID = room guid (the
+        // client resolves it on create and crashes on a missing parent, NULL+0x20). Its CREATE goes out as soon as it
+        // is added to the map, so the mesh list and the doors are filled in first: retail's CREATE already carries
+        // both, and the client prices a stairwell from the door links it sees on create - with an empty door list
+        // both halves were charged until the editor was reopened.
         HousingRoomEntity* housingRoom = new HousingRoomEntity();
         PhasingHandler::InitDbPhaseShift(housingRoom->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
         housingRoom->SetHouseGUID(houseGuid);
         housingRoom->SetHouseRoomID(room->RoomEntryId);
-        housingRoom->SetFlags(roomFlags);
-        housingRoom->SetFloorIndex(floorIndex);
+        // Sniff: entry hall 1, stairwell halves 2 (HouseRoom flags BASE_ROOM / HAS_STAIRS)
+        housingRoom->SetFlags(roomData->Flags & (HOUSING_ROOM_FLAG_BASE_ROOM | HOUSING_ROOM_FLAG_HAS_STAIRS));
+        housingRoom->SetFloorIndex(room->FloorIndex);
         housingRoom->SetMirroredPosition(roomPos, roomRot, 1.0f);
 
-        if (!housingRoom->Create(roomHousingGuid, this, roomPos))
+        // --- Phase 2: component MeshObjects (not on the map yet) ---
+        std::unordered_map<uint32, DoorwayState> doorways = GetDoorwayStates(rooms, *room);
+        std::vector<MeshObject*> componentMeshes;
+
+        for (RoomComponentData const& comp : *components)
+        {
+            if (IsComponentHidden(rooms, *room, comp))
+                continue;
+
+            auto doorway = doorways.find(comp.ID);
+            for (RoomComponentOptionEntry const* option : SelectComponentOptions(*room, comp, factionThemeID,
+                doorway != doorways.end() ? &doorway->second : nullptr))
+                if (MeshObject* componentMesh = CreateRoomComponentMesh(*room, comp, option, roomPos))
+                    componentMeshes.push_back(componentMesh);
+        }
+
+        // --- Phase 3: door list ---
+        // One entry per horizontal connectable wall, connected or not: the client renders a
+        // fixture handle on doors with an empty AttachedRoomGUID and hides it on connected ones.
+        std::vector<Housing::RoomDoor> doors = Housing::GetRoomDoors(*room);
+        for (Housing::RoomDoor const& door : doors)
+        {
+            Housing::Room const* attached = Housing::FindRoomAtDoor(rooms, *room, door);
+            housingRoom->AddDoor(static_cast<int32>(door.ComponentId), door.Local, door.ComponentType,
+                attached ? attached->Guid : ObjectGuid::Empty);
+        }
+
+        for (MeshObject* componentMesh : componentMeshes)
+            housingRoom->AddMeshObject(componentMesh->GetGUID());
+
+        if (!housingRoom->Create(room->Guid, this, roomPos))
         {
             TC_LOG_ERROR("housing", "HouseInteriorMap: Failed to add HousingRoomEntity to map (roomEntry={})",
                 room->RoomEntryId);
             delete housingRoom;
+            for (MeshObject* componentMesh : componentMeshes)
+                delete componentMesh;
             continue;
         }
         _roomEntities.push_back(housingRoom);
 
-        // --- Phase 2: Create all component MeshObjects ---
-
-        std::vector<MeshObject*> componentMeshes;
-        uint32 wallCount = 0, floorCount = 0, ceilingCount = 0, doorwayCount = 0;
-        uint32 stairsCount = 0, pillarCount = 0, doorwayWallCount = 0, otherCount = 0;
-
-        bool isStairwell = roomData->HasStairs();
-
-        // Stairwells come in stacked pairs at the same XY — the stairs-bearing
-        // room and its upper partner (12 yards above). HAS_STAIRS flag is set
-        // on BOTH rooms in the pair (incl. "Stairwell Room (Empty)"), so we
-        // classify by checking for a partner at Z±12 at the same XY.
-        //   Base   = has another stairwell 12 yards ABOVE  → skip ceiling
-        //            (partner above provides it at world Z=24)
-        //   Partner = has another stairwell 12 yards BELOW → skip floor
-        //            (stairs mesh below already fills the landing at Z=12)
-        bool hasPartnerAbove = false;
-        bool hasPartnerBelow = false;
-        if (isStairwell)
-        {
-            for (Housing::Room const* other : rooms)
-            {
-                if (other == room) continue;
-                if (other->GridX != room->GridX || other->GridY != room->GridY) continue;
-                HouseRoomData const* od = sHousingMgr.GetHouseRoomData(other->RoomEntryId);
-                if (!od || !od->HasStairs()) continue;
-                if (other->FloorIndex == room->FloorIndex + 1) hasPartnerAbove = true;
-                if (other->FloorIndex == room->FloorIndex - 1) hasPartnerBelow = true;
-            }
-        }
-        bool isStairwellBase    = isStairwell && hasPartnerAbove;
-        bool isStairwellPartner = isStairwell && hasPartnerBelow;
-
-        if (isStairwell)
-            TC_LOG_ERROR("housing", "  STAIRWELL ROOM entry={} roomWorldPos=({:.1f},{:.1f},{:.1f}) facing={:.2f} "
-                "geobox=({:.1f},{:.1f},{:.1f})->({:.1f},{:.1f},{:.1f}) components={}",
-                room->RoomEntryId, roomX, roomY, roomZ, roomFacing,
-                geoMinX, geoMinY, geoMinZ, geoMaxX, geoMaxY, geoMaxZ,
-                uint32(components->size()));
-
-        for (RoomComponentData const& comp : *components)
-        {
-            // Base stairwell (has a partner above): skip its ceiling so the
-            // upper floor is visible through the stairwell opening.
-            if (isStairwellBase && comp.Type == HOUSING_ROOM_COMPONENT_CEILING)
-                continue;
-
-            // Partner stairwell (upper, has a stairs-bearing room below): skip
-            // its floor so the stairs mesh from below visually reaches the
-            // landing without z-fighting, and the gap between floors stays
-            // open. Keep the ceiling (at world Z=24) and the walls.
-            if (isStairwellPartner && comp.Type == HOUSING_ROOM_COMPONENT_FLOOR)
-                continue;
-
-            // Log stairwell component positions to diagnose ceiling height
-            if (isStairwell)
-                TC_LOG_ERROR("housing", "  STAIRWELL comp ID={} Type={} ConnType={} LocalPos=({:.1f},{:.1f},{:.1f}) "
-                    "WorldZ={:.1f} MSFID={} DefaultFDID={}",
-                    comp.ID, comp.Type, comp.ConnectionType,
-                    comp.OffsetPos[0], comp.OffsetPos[1], comp.OffsetPos[2],
-                    roomZ + comp.OffsetPos[2], comp.MeshStyleFilterID, comp.ModelFileDataID);
-
-            // Look up RoomComponentOption for this component via MeshStyleFilterID.
-            // Alliance sniff-verified: ALL components use faction theme (1=Folk → sub-theme 6).
-            // Horde uses theme 2 (Rugged → sub-theme 8). Each faction uses its OWN wall models.
-            // Component position/rotation: local to room entity
-            Position compPos(comp.OffsetPos[0], comp.OffsetPos[1], comp.OffsetPos[2], 0.0f);
-            QuaternionData compRot;
-            // DB2 OffsetRot is in DEGREES — convert to radians. Z is negated (sniff-verified).
-            static constexpr float DEG_TO_RAD = static_cast<float>(M_PI / 180.0);
-            float rx = comp.OffsetRot[0] * DEG_TO_RAD;
-            float ry = comp.OffsetRot[1] * DEG_TO_RAD;
-            float rz = -comp.OffsetRot[2] * DEG_TO_RAD; // negated (sniff-verified)
-            float cx = std::cos(rx / 2.0f), sx = std::sin(rx / 2.0f);
-            float cy = std::cos(ry / 2.0f), sy = std::sin(ry / 2.0f);
-            float cz = std::cos(rz / 2.0f), sz = std::sin(rz / 2.0f);
-            compRot.x = sx * cy * cz - cx * sy * sz;
-            compRot.y = cx * sy * cz + sx * cy * sz;
-            compRot.z = cx * cy * sz - sx * sy * cz;
-            compRot.w = cx * cy * cz + sx * sy * sz;
-
-            // Look up ALL options for this component. Alliance sniff shows:
-            // - Corner walls (MSFID=46): TWO MeshObjects (SubType=0 + SubType=1)
-            // - Doorway walls: TWO MeshObjects (DoorwayWall Field_20=1 + Doorway Field_20=2)
-            // - Flat walls/floors/ceilings: ONE MeshObject (Cosmetic SubType=0)
-            // Per-surface theme: walls / floors / ceilings can carry independent
-            // theme IDs. Fall back to the legacy single ThemeId then faction.
-            uint32 perSurfaceTheme = 0;
-            switch (comp.Type)
-            {
-                case HOUSING_ROOM_COMPONENT_WALL:
-                case HOUSING_ROOM_COMPONENT_DOORWAY_WALL:
-                    perSurfaceTheme = room->WallThemeId;
-                    break;
-                case HOUSING_ROOM_COMPONENT_FLOOR:
-                    perSurfaceTheme = room->FloorThemeId;
-                    break;
-                case HOUSING_ROOM_COMPONENT_CEILING:
-                    perSurfaceTheme = room->CeilingThemeId;
-                    break;
-                default:
-                    break;
-            }
-            int32 rawTheme = perSurfaceTheme ? static_cast<int32>(perSurfaceTheme)
-                : (room->ThemeId != 0 ? static_cast<int32>(room->ThemeId) : factionThemeID);
-            // RoomComponentOption rows only exist for base themes (1-5). The stored
-            // per-surface themes are usually sub-themes (e.g. 11=Bel'ameth Folk,
-            // 20=Folk Light) — resolve them to the parent base theme or the lookup
-            // falls through to the faction default and the user's style is lost.
-            int32 lookupTheme = sHousingMgr.GetBaseThemeID(rawTheme);
-            if (lookupTheme <= 0)
-                lookupTheme = rawTheme;
-            std::vector<RoomComponentOptionEntry const*> allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, lookupTheme);
-            if (allOptions.empty())
-                allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, factionThemeID);
-            if (allOptions.empty() && factionThemeID != 2)
-                allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, 2);
-            if (allOptions.empty() && factionThemeID != 1)
-                allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, 1);
-
-            // Determine door connectivity and which side spawns the door meshes.
-            // Sniff-verified: only the child room (higher slotIndex) spawns DoorwayWall+Doorway.
-            // The parent room (lower slotIndex) keeps its Cosmetic wall (Type=0) to fill the
-            // full wall width — needed when the child room is narrower than the parent.
-            bool isDoorComponent = (comp.ConnectionType != 0) &&
-                (std::abs(comp.OffsetPos[0]) > 0.5f) != (std::abs(comp.OffsetPos[1]) > 0.5f);
-            bool hasConnectedRoom = false;
-            bool isParentSide = false; // true = keep as Cosmetic wall only (no door meshes)
-            if (isDoorComponent)
-            {
-                ObjectGuid neighborGuid = findNeighborAtDoor(room, comp.OffsetPos[0], comp.OffsetPos[1]);
-                if (!neighborGuid.IsEmpty())
-                {
-                    hasConnectedRoom = true;
-                    auto nItr = roomByGuid.find(neighborGuid);
-                    if (nItr != roomByGuid.end() && nItr->second->SlotIndex > room->SlotIndex)
-                        isParentSide = true; // child room handles the DoorwayWall+Doorway
-                }
-            }
-
-            // Filter options: spawn each relevant one as a separate MeshObject
-            for (RoomComponentOptionEntry const* optEntry : allOptions)
-            {
-                // Parent side of a connection: spawn DoorwayWall (Type=1) ONLY.
-                // Type=1 is a single mesh containing both the door opening AND
-                // the side fillers — no Type=0 solid wall needed (that would seal
-                // the door), and no Type=2 door frame (child handles that).
-                if (isParentSide && optEntry->Type != 1)
-                    continue;
-                // Child side with connection: spawn DoorwayWall (Type=1) + Doorway (Type=2)
-                if (isDoorComponent && hasConnectedRoom && !isParentSide && optEntry->Type == 0)
-                    continue;
-                // For non-door walls: only spawn Type=0 (Cosmetic) options
-                if (!isDoorComponent && optEntry->Type != 0)
-                    continue;
-                // Unconnected door walls: only Cosmetic
-                if (isDoorComponent && !hasConnectedRoom && optEntry->Type != 0)
-                    continue;
-
-                int32 compFileDataID = optEntry->ModelFileDataID > 0 ? optEntry->ModelFileDataID : comp.ModelFileDataID;
-                if (compFileDataID <= 0)
-                    continue; // No model for this option
-                int32 roomComponentOptionID = static_cast<int32>(optEntry->ID);
-                int32 houseThemeID = sHousingMgr.GetDefaultSubThemeID(optEntry->HouseThemeID);
-                int32 field24 = static_cast<int32>(optEntry->SubType);
-                uint8 field20 = static_cast<uint8>(optEntry->Type); // 0=Cosmetic, 1=DoorwayWall, 2=Doorway
-
-                // Per-component-type texture resolution (sniff-verified: wall/floor/ceiling store independently)
-                int32 roomComponentTextureID = 0;
-                uint32 storedTexture = 0;
-                switch (comp.Type)
-                {
-                    case HOUSING_ROOM_COMPONENT_WALL:
-                    case HOUSING_ROOM_COMPONENT_DOORWAY_WALL:
-                        storedTexture = room->WallTextureId;
-                        break;
-                    case HOUSING_ROOM_COMPONENT_FLOOR:
-                        storedTexture = room->FloorTextureId;
-                        break;
-                    case HOUSING_ROOM_COMPONENT_CEILING:
-                        storedTexture = room->CeilingTextureId;
-                        break;
-                    default:
-                        break;
-                }
-                if (storedTexture != 0)
-                    roomComponentTextureID = static_cast<int32>(storedTexture);
-                else
-                {
-                    roomComponentTextureID = sHousingMgr.GetTextureIdForComponentOption(roomComponentOptionID);
-                    if (roomComponentTextureID == 0)
-                        roomComponentTextureID = sHousingMgr.GetTextureIdForComponentType(comp.Type);
-                    if (roomComponentTextureID == 0)
-                    {
-                        switch (comp.Type)
-                        {
-                            case 1: roomComponentTextureID = 24; break;
-                            case 2: roomComponentTextureID = 40; break;
-                            case 3: roomComponentTextureID = 54; break;
-                            default: break;
-                        }
-                    }
-                }
-
-            // Debug: log stairwell spawns so we can see what FileDataID/option is chosen
-            if (isStairwell)
-                TC_LOG_ERROR("housing", "  STAIRWELL SPAWN comp={} Type={} MSFID={} -> option={} optType={} optSubType={} "
-                    "FDID={} theme={} (lookupTheme={} factionTheme={})",
-                    comp.ID, comp.Type, comp.MeshStyleFilterID,
-                    roomComponentOptionID, uint32(field20), field24, compFileDataID,
-                    optEntry->HouseThemeID, lookupTheme, factionThemeID);
-
-            MeshObject* componentMesh = MeshObject::CreateMeshObject(this, compPos, compRot, 1.0f,
-                compFileDataID, /*isWMO*/ true,
-                roomHousingGuid, /*attachFlags*/ 3, &roomPos);
-
-            if (!componentMesh)
-            {
-                TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: "
-                    "CreateMeshObject failed for component (compID={}, fileDataID={}, roomEntry={})",
-                    comp.ID, compFileDataID, room->RoomEntryId);
-                continue;
-            }
-
-            PhasingHandler::InitDbPhaseShift(componentMesh->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
-            componentMesh->InitHousingRoomComponentData(roomHousingGuid,
-                roomComponentOptionID, static_cast<int32>(comp.ID),
-                comp.Type, field24, field20,
-                houseThemeID, roomComponentTextureID,
-                /*roomComponentTypeParam*/ 0,
-                geoMinX, geoMinY, geoMinZ,
-                geoMaxX, geoMaxY, geoMaxZ);
-
-            componentMeshes.push_back(componentMesh);
-
-            } // end for (allOptions)
-
-            // Count by component type for diagnostic summary
-            switch (comp.Type)
-            {
-                case HOUSING_ROOM_COMPONENT_WALL: ++wallCount; break;
-                case HOUSING_ROOM_COMPONENT_FLOOR: ++floorCount; break;
-                case HOUSING_ROOM_COMPONENT_CEILING: ++ceilingCount; break;
-                case HOUSING_ROOM_COMPONENT_STAIRS: ++stairsCount; break;
-                case HOUSING_ROOM_COMPONENT_PILLAR: ++pillarCount; break;
-                case HOUSING_ROOM_COMPONENT_DOORWAY_WALL: ++doorwayWallCount; break;
-                case HOUSING_ROOM_COMPONENT_DOORWAY: ++doorwayCount; break;
-                default: ++otherCount; break;
-            }
-        }
-
-        TC_LOG_ERROR("housing", "  Room '{}' component summary: walls={} floors={} ceilings={} "
-            "doorways={} stairs={} pillars={} doorwayWalls={} other={} total={}",
-            roomData->Name, wallCount, floorCount, ceilingCount, doorwayCount,
-            stairsCount, pillarCount, doorwayWallCount, otherCount, uint32(components->size()));
-
-        // --- Phase 2: Add all component MeshObjects to map ---
-
+        // --- Phase 4: Add all component MeshObjects to map ---
+        std::vector<ObjectGuid>& roomMeshes = _roomMeshObjects[room->Guid];
+        bool meshFailed = false;
         for (MeshObject* componentMesh : componentMeshes)
         {
             if (AddToMap(componentMesh))
             {
-                _roomMeshObjects[room->Guid].push_back(componentMesh->GetGUID());
+                roomMeshes.push_back(componentMesh->GetGUID());
                 ++totalMeshes;
             }
             else
@@ -570,61 +492,234 @@ void HouseInteriorMap::SpawnRoomMeshObjectsFromList(std::vector<Housing::Room co
                     "AddToMap failed for component (roomEntry={})",
                     room->RoomEntryId);
                 delete componentMesh;
+                meshFailed = true;
             }
         }
+        if (meshFailed)
+            housingRoom->ReplaceMeshObjects(roomMeshes);
 
-        // --- Phase 4: Populate HousingRoomEntity with component GUIDs + door data ---
-        // The entity was created in Phase 1 (before components) so it exists when
-        // components reference it via AttachParentGUID. Now add the child list + doors.
-        {
-            for (MeshObject* comp : componentMeshes)
-            {
-                if (comp->IsInWorld())
-                    housingRoom->AddMeshObject(comp->GetGUID());
-            }
-
-            // Add one door entry per door-capable WALL slot. A door-capable slot
-            // is a WALL (not Doorway/DoorwayWall — those are visual overlays of a
-            // connected wall) with ConnectionType>0 and exactly one of X/Y
-            // nonzero (skip vertical ceiling/floor doors — those go through the
-            // stairwell partner stack and would trip the client's connected-door
-            // count). Advertise both connected and unconnected slots: the client
-            // renders a fixture handle on doors with empty AttachedRoomGUID and
-            // hides it on connected doors.
-            uint32 doorCount = 0;
-            for (RoomComponentData const& comp : *components)
-            {
-                if (comp.Type != HOUSING_ROOM_COMPONENT_WALL) continue;
-                if (comp.ConnectionType == 0) continue;
-                bool hasX = std::abs(comp.OffsetPos[0]) > 0.5f;
-                bool hasY = std::abs(comp.OffsetPos[1]) > 0.5f;
-                if (hasX == hasY) continue;
-
-                ObjectGuid attachedRoomGuid = findNeighborAtDoor(room, comp.OffsetPos[0], comp.OffsetPos[1]);
-
-                Position doorOffset(comp.OffsetPos[0], comp.OffsetPos[1], comp.OffsetPos[2]);
-                uint8 connType = comp.ConnectionType;
-                housingRoom->AddDoor(static_cast<int32>(comp.ID), doorOffset, connType, attachedRoomGuid);
-                ++doorCount;
-            }
-
-            TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: Created HousingRoomEntity "
-                "guid={} roomEntry={} slot={} meshObjects={} doors={}",
-                roomHousingGuid.ToString(), room->RoomEntryId, room->SlotIndex,
-                uint32(componentMeshes.size()), doorCount);
-        }
-
-        TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: Room '{}' (entry={}, slot={}) "
-            "spawned {} component MeshObjects (themeID={}) at ({:.1f},{:.1f},{:.1f})",
-            roomData->Name, room->RoomEntryId, room->SlotIndex,
-            uint32(componentMeshes.size()), factionThemeID,
-            roomX, roomY, roomZ);
+        TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: Room '{}' (entry={}, slot={}) guid={} "
+            "spawned {} component MeshObjects, {} doors ({} connected) at ({:.1f},{:.1f},{:.1f}) orientation={}",
+            roomData->Name, room->RoomEntryId, room->SlotIndex, room->Guid.ToString(),
+            uint32(componentMeshes.size()), uint32(doors.size()), uint32(doorways.size()),
+            roomPos.GetPositionX(), roomPos.GetPositionY(), roomPos.GetPositionZ(), room->Orientation);
     }
 
     TC_LOG_ERROR("housing", "HouseInteriorMap::SpawnRoomMeshObjects: Spawned {} total MeshObjects for {} rooms "
         "(owner={}, map={}, instanceId={}, faction={})",
         totalMeshes, uint32(rooms.size()), _owner.ToString(), GetId(), GetInstanceId(),
         factionRestriction == NEIGHBORHOOD_FACTION_ALLIANCE ? "Alliance" : "Horde");
+}
+
+HousingRoomEntity* HouseInteriorMap::FindRoomEntity(ObjectGuid roomGuid) const
+{
+    for (HousingRoomEntity* re : _roomEntities)
+        if (re && re->IsInWorld() && re->GetGUID() == roomGuid)
+            return re;
+    return nullptr;
+}
+
+bool HouseInteriorMap::IsComponentHidden(std::vector<Housing::Room const*> const& rooms, Housing::Room const& room, RoomComponentData const& comp)
+{
+    // Both stairwell halves are the same HouseRoom stacked at one XY (12.1.0.69933 sniff): the lower half has no
+    // ceiling, the upper one no floor and no stairs, so the stairs reach the landing through an open shaft.
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
+    if (!roomData || !roomData->HasStairs())
+        return false;
+
+    for (Housing::Room const* other : rooms)
+    {
+        if (other == &room || other->GridX != room.GridX || other->GridY != room.GridY)
+            continue;
+        HouseRoomData const* otherData = sHousingMgr.GetHouseRoomData(other->RoomEntryId);
+        if (!otherData || !otherData->HasStairs())
+            continue;
+        if (other->FloorIndex == room.FloorIndex + 1 && comp.Type == HOUSING_ROOM_COMPONENT_CEILING)
+            return true;
+        if (other->FloorIndex == room.FloorIndex - 1
+            && (comp.Type == HOUSING_ROOM_COMPONENT_FLOOR || comp.Type == HOUSING_ROOM_COMPONENT_STAIRS))
+            return true;
+    }
+    return false;
+}
+
+void HouseInteriorMap::ReplaceSlotMeshes(Housing::Room const& room, RoomComponentData const& comp,
+    std::vector<RoomComponentOptionEntry const*> const& wanted, Position const& roomPos, std::vector<ObjectGuid>& roomMeshes)
+{
+    // Retail answers a restyle with DESTROY of the slot's pieces and CREATE of new ones (new GUIDs).
+    std::vector<ObjectGuid> current;
+    for (ObjectGuid const& meshGuid : roomMeshes)
+        if (MeshObject* mesh = GetMeshObject(meshGuid))
+            if (mesh->GetRoomComponentID() == static_cast<int32>(comp.ID))
+                current.push_back(meshGuid);
+
+    for (ObjectGuid const& meshGuid : current)
+    {
+        if (MeshObject* mesh = GetMeshObject(meshGuid))
+        {
+            mesh->DestroyForNearbyPlayers();
+            RemoveFromMap(mesh, true);
+        }
+        std::erase(roomMeshes, meshGuid);
+    }
+
+    for (RoomComponentOptionEntry const* option : wanted)
+    {
+        MeshObject* mesh = CreateRoomComponentMesh(room, comp, option, roomPos);
+        if (!mesh)
+            continue;
+        if (AddToMap(mesh))
+            roomMeshes.push_back(mesh->GetGUID());
+        else
+            delete mesh;
+    }
+}
+
+void HouseInteriorMap::RebuildRoomComponents(std::vector<Housing::Room const*> const& rooms, Housing::Room const& room,
+    int32 factionRestriction, std::vector<uint32> const& componentIds)
+{
+    auto meshItr = _roomMeshObjects.find(room.Guid);
+    HousingRoomEntity* roomEntity = FindRoomEntity(room.Guid);
+    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
+    std::vector<RoomComponentData> const* components = roomData ? sHousingMgr.GetRoomComponents(roomData->RoomWmoDataID) : nullptr;
+    if (meshItr == _roomMeshObjects.end() || !roomEntity || !components)
+        return;
+
+    int32 factionThemeID = sHousingMgr.GetFactionDefaultThemeID(factionRestriction);
+    std::unordered_map<uint32, DoorwayState> doorways = GetDoorwayStates(rooms, room);
+    Position roomPos = GetRoomWorldPosition(room);
+    uint32 rebuilt = 0;
+
+    for (RoomComponentData const& comp : *components)
+    {
+        if (std::find(componentIds.begin(), componentIds.end(), comp.ID) == componentIds.end())
+            continue;
+        if (IsComponentHidden(rooms, room, comp))
+            continue;
+
+        auto doorway = doorways.find(comp.ID);
+        std::vector<RoomComponentOptionEntry const*> wanted = SelectComponentOptions(room, comp, factionThemeID,
+            doorway != doorways.end() ? &doorway->second : nullptr);
+
+        // A slot that already looks like this is left alone (retail skips it in an "apply to all").
+        std::vector<std::pair<int32, int32>> currentLook, wantedLook;
+        for (ObjectGuid const& meshGuid : meshItr->second)
+            if (MeshObject* mesh = GetMeshObject(meshGuid))
+                if (mesh->GetRoomComponentID() == static_cast<int32>(comp.ID))
+                    currentLook.emplace_back(mesh->GetRoomComponentOptionID(), mesh->GetHouseThemeID());
+        for (RoomComponentOptionEntry const* option : wanted)
+            wantedLook.emplace_back(static_cast<int32>(option->ID), GetComponentHouseThemeID(room, comp, option));
+        std::sort(currentLook.begin(), currentLook.end());
+        std::sort(wantedLook.begin(), wantedLook.end());
+        if (currentLook == wantedLook)
+            continue;
+
+        ReplaceSlotMeshes(room, comp, wanted, roomPos, meshItr->second);
+        ++rebuilt;
+    }
+
+    if (rebuilt)
+        roomEntity->ReplaceMeshObjects(meshItr->second);
+
+    TC_LOG_DEBUG("housing", "HouseInteriorMap::RebuildRoomComponents: room {} rebuilt {} of {} requested slots",
+        room.Guid.ToString(), rebuilt, uint32(componentIds.size()));
+}
+
+void HouseInteriorMap::RefreshRoomDoors(std::vector<Housing::Room const*> const& rooms, int32 factionRestriction)
+{
+    // Called after the layout changed (room added, removed, turned, door style picked): rebuild only the door
+    // slots whose look changed and re-point the door list, the way retail answers these edits.
+    int32 factionThemeID = sHousingMgr.GetFactionDefaultThemeID(factionRestriction);
+
+    for (Housing::Room const* room : rooms)
+    {
+        auto meshItr = _roomMeshObjects.find(room->Guid);
+        HousingRoomEntity* roomEntity = FindRoomEntity(room->Guid);
+        if (meshItr == _roomMeshObjects.end() || !roomEntity)
+            continue;
+
+        HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room->RoomEntryId);
+        std::vector<RoomComponentData> const* components = roomData ? sHousingMgr.GetRoomComponents(roomData->RoomWmoDataID) : nullptr;
+        if (!components)
+            continue;
+
+        std::unordered_map<uint32, DoorwayState> doorways = GetDoorwayStates(rooms, *room);
+        Position roomPos = GetRoomWorldPosition(*room);
+        bool meshesChanged = false;
+
+        for (Housing::RoomDoor const& door : Housing::GetRoomDoors(*room))
+        {
+            auto compItr = std::find_if(components->begin(), components->end(),
+                [&](RoomComponentData const& c) { return c.ID == door.ComponentId; });
+            if (compItr == components->end())
+                continue;
+
+            Housing::Room const* attached = Housing::FindRoomAtDoor(rooms, *room, door);
+            roomEntity->UpdateDoorConnection(static_cast<int32>(door.ComponentId), attached ? attached->Guid : ObjectGuid::Empty);
+            if (door.IsVertical())
+                continue; // the stairwell link has no doorway pieces
+
+            auto doorway = doorways.find(door.ComponentId);
+
+            std::vector<RoomComponentOptionEntry const*> wanted = SelectComponentOptions(*room, *compItr, factionThemeID,
+                doorway != doorways.end() ? &doorway->second : nullptr);
+
+            std::vector<int32> currentOptions;
+            for (ObjectGuid const& meshGuid : meshItr->second)
+                if (MeshObject* mesh = GetMeshObject(meshGuid))
+                    if (mesh->GetRoomComponentID() == static_cast<int32>(door.ComponentId))
+                        currentOptions.push_back(mesh->GetRoomComponentOptionID());
+
+            std::vector<int32> wantedOptions;
+            for (RoomComponentOptionEntry const* option : wanted)
+                wantedOptions.push_back(static_cast<int32>(option->ID));
+            std::sort(currentOptions.begin(), currentOptions.end());
+            std::sort(wantedOptions.begin(), wantedOptions.end());
+            if (currentOptions == wantedOptions)
+                continue;
+
+            ReplaceSlotMeshes(*room, *compItr, wanted, roomPos, meshItr->second);
+            meshesChanged = true;
+        }
+
+        if (meshesChanged)
+            roomEntity->ReplaceMeshObjects(meshItr->second);
+    }
+}
+
+void HouseInteriorMap::UpdateRoomPlacement(Housing::Room const& room)
+{
+    for (HousingRoomEntity* re : _roomEntities)
+    {
+        if (!re || !re->IsInWorld() || re->GetGUID() != room.Guid)
+            continue;
+
+        // Retail turns a room in place: one VALUES update of its FMirroredPositionData_C. Its meshes and decor
+        // hang off it and follow on the client.
+        Position roomPos = GetRoomWorldPosition(room);
+        re->Relocate(roomPos);
+        re->SetMirroredPosition(roomPos, QuaternionData::fromEulerAnglesZYX(roomPos.GetOrientation(), 0.0f, 0.0f), 1.0f);
+        break;
+    }
+}
+
+bool HouseInteriorMap::IsInsideAnyRoom(Position const& pos, std::vector<Housing::Room const*> const& rooms) const
+{
+    constexpr float TOLERANCE = 0.5f;
+    for (Housing::Room const* room : rooms)
+    {
+        HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room->RoomEntryId);
+        RoomWmoDataEntry const* bounds = roomData && roomData->RoomWmoDataID ? sRoomWmoDataStore.LookupEntry(roomData->RoomWmoDataID) : nullptr;
+        if (!bounds)
+            continue;
+
+        Position const local = HousingWorldToRoomLocal(GetRoomWorldPosition(*room), pos);
+        if (local.GetPositionX() >= bounds->BoundingBoxMinX - TOLERANCE && local.GetPositionX() <= bounds->BoundingBoxMaxX + TOLERANCE
+            && local.GetPositionY() >= bounds->BoundingBoxMinY - TOLERANCE && local.GetPositionY() <= bounds->BoundingBoxMaxY + TOLERANCE
+            && local.GetPositionZ() >= bounds->BoundingBoxMinZ - TOLERANCE && local.GetPositionZ() <= bounds->BoundingBoxMaxZ + TOLERANCE)
+            return true;
+    }
+    return false;
 }
 
 void HouseInteriorMap::DespawnAllRoomMeshObjects()
@@ -726,106 +821,7 @@ void HouseInteriorMap::DespawnRoomEntities(ObjectGuid roomGuid)
         despawnCount, roomGuid.ToString(), _owner.ToString());
 }
 
-void HouseInteriorMap::ReplaceWallWithDoorway(ObjectGuid roomGuid, uint32 doorComponentID,
-    int32 factionRestriction, Housing::Room const& room, ObjectGuid newRoomGuid)
-{
-    // The parent room keeps its Cosmetic wall (Type=0) to fill the full wall width.
-    // The child room's DoorwayWall+Doorway renders over it to create the door opening.
-    // This function is now a no-op — the parent's wall stays as-is.
-    // Replace the parent's Cosmetic wall (Type=0) with DoorwayWall (Type=1) only.
-    // Type=1 has the door opening + side fillers. The child room handles the Doorway (Type=2).
-    auto meshItr = _roomMeshObjects.find(roomGuid);
-    if (meshItr == _roomMeshObjects.end())
-        return;
-
-    // Destroy existing Cosmetic wall for this component
-    ObjectGuid wallMeshGuid;
-    Position wallPos;
-    QuaternionData wallRot;
-    for (ObjectGuid const& meshGuid : meshItr->second)
-    {
-        if (MeshObject* mesh = GetMeshObject(meshGuid))
-        {
-            if (mesh->GetRoomComponentID() == static_cast<int32>(doorComponentID))
-            {
-                wallMeshGuid = meshGuid;
-                wallPos = mesh->GetLocalPosition();
-                wallRot = mesh->GetLocalRotation();
-                break;
-            }
-        }
-    }
-
-    if (wallMeshGuid.IsEmpty())
-        return;
-
-    MeshObject* wallMesh = GetMeshObject(wallMeshGuid);
-    if (!wallMesh) return;
-
-    wallMesh->DestroyForNearbyPlayers();
-    RemoveFromMap(wallMesh, true);
-    meshItr->second.erase(
-        std::remove(meshItr->second.begin(), meshItr->second.end(), wallMeshGuid),
-        meshItr->second.end());
-
-    // Spawn DoorwayWall (Type=1) only — the child room handles Doorway (Type=2)
-    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
-    if (!roomData) return;
-    std::vector<RoomComponentData> const* components = sHousingMgr.GetRoomComponents(roomData->RoomWmoDataID);
-    if (!components) return;
-
-    RoomComponentData const* doorComp = nullptr;
-    for (auto const& c : *components)
-        if (c.ID == doorComponentID) { doorComp = &c; break; }
-    if (!doorComp) return;
-
-    int32 lookupTheme = (room.ThemeId != 0) ? static_cast<int32>(room.ThemeId) : sHousingMgr.GetFactionDefaultThemeID(factionRestriction);
-    auto allOptions = sHousingMgr.FindAllRoomComponentOptions(doorComp->MeshStyleFilterID, lookupTheme);
-
-    float roomX = _originX + static_cast<float>(room.GridX);
-    float roomY = _originY + static_cast<float>(room.GridY);
-    Position roomPos(roomX, roomY, _originZ, 0.0f);
-
-    for (RoomComponentOptionEntry const* optEntry : allOptions)
-    {
-        if (optEntry->Type != 1) // Only DoorwayWall
-            continue;
-
-        int32 compFileDataID = optEntry->ModelFileDataID > 0 ? optEntry->ModelFileDataID : doorComp->ModelFileDataID;
-        int32 houseThemeID = sHousingMgr.GetDefaultSubThemeID(optEntry->HouseThemeID);
-
-        MeshObject* doorMesh = MeshObject::CreateMeshObject(this, wallPos, wallRot, 1.0f,
-            compFileDataID, true, roomGuid, 3, &roomPos);
-        if (!doorMesh) continue;
-
-        PhasingHandler::InitDbPhaseShift(doorMesh->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
-        doorMesh->InitHousingRoomComponentData(roomGuid,
-            static_cast<int32>(optEntry->ID), static_cast<int32>(doorComp->ID),
-            doorComp->Type, static_cast<int32>(optEntry->SubType), static_cast<uint8>(optEntry->Type),
-            houseThemeID, 24, 0,
-            0, 0, 0, 0, 0, 0);
-
-        if (AddToMap(doorMesh))
-            meshItr->second.push_back(doorMesh->GetGUID());
-        else
-            delete doorMesh;
-    }
-
-    // Update room entity's MeshObjects list
-    for (HousingRoomEntity* re : _roomEntities)
-    {
-        if (re && re->IsInWorld() && re->GetGUID() == roomGuid)
-        {
-            re->ReplaceMeshObjects(meshItr->second);
-            break;
-        }
-    }
-
-    TC_LOG_DEBUG("housing", "ReplaceWallWithDoorway: room={} compID={} — replaced Cosmetic with DoorwayWall(Type=1)",
-        roomGuid.ToString(), doorComponentID);
-}
-
-void HouseInteriorMap::UpdateRoomComponentTextures(ObjectGuid roomGuid, Housing::Room const& room,
+void HouseInteriorMap::UpdateRoomComponentTextures(ObjectGuid roomGuid, Housing::Room const& /*room*/,
     std::vector<uint32> const* componentIDs, int32 textureID)
 {
     // Material/texture-only change: update existing MeshObjects in-place via UPDATE_OBJECT.
@@ -855,214 +851,6 @@ void HouseInteriorMap::UpdateRoomComponentTextures(ObjectGuid roomGuid, Housing:
         ++matchCount;
     }
     TC_LOG_DEBUG("housing", "UpdateRoomComponentTextures: room={} textureID={} matched={}", roomGuid.ToString(), textureID, matchCount);
-}
-
-void HouseInteriorMap::RespawnRoomComponentsForTheme(ObjectGuid roomGuid, int32 factionRestriction,
-    Housing::Room const& room, std::vector<uint32> const* componentIDs, int32 newThemeID,
-    int32 overrideSubType /*= -1*/, int32 overrideRoomCompID /*= -1*/)
-{
-    // Theme changes require different models (FileDataIDs), so we DESTROY old meshes
-    // and CREATE new ones with new GUIDs. The client shows walls disappearing/reappearing.
-    auto meshItr = _roomMeshObjects.find(roomGuid);
-    if (meshItr == _roomMeshObjects.end())
-        return;
-
-    int32 factionThemeID = sHousingMgr.GetFactionDefaultThemeID(factionRestriction);
-    int32 effectiveThemeID = sHousingMgr.GetBaseThemeID(newThemeID);
-
-    // Find the room entity for attachment
-    ObjectGuid roomHousingGuid;
-    Position roomPos;
-    for (HousingRoomEntity* re : _roomEntities)
-    {
-        if (re && re->GetGUID() == roomGuid)
-        {
-            roomHousingGuid = re->GetGUID();
-            roomPos = re->GetPosition();
-            break;
-        }
-    }
-    if (roomHousingGuid.IsEmpty())
-    {
-        TC_LOG_ERROR("housing", "RespawnRoomComponentsForTheme: room entity {} not found", roomGuid.ToString());
-        return;
-    }
-
-    // Phase 1: Record existing mesh option Types before destroying.
-    // This preserves door vs plain wall state — we only spawn options whose Type
-    // matches what was there before (prevents doors appearing on every wall).
-    struct OldMeshInfo { ObjectGuid guid; int32 compID; uint8 optType; uint8 optSubType; int32 textureID; };
-    std::vector<OldMeshInfo> toDestroy;
-
-    for (ObjectGuid const& meshGuid : meshItr->second)
-    {
-        MeshObject* mesh = GetMeshObject(meshGuid);
-        if (!mesh) continue;
-        int32 compID = mesh->GetRoomComponentID();
-        if (compID == 0) continue;
-
-        bool match = !componentIDs || componentIDs->empty();
-        if (!match)
-            for (uint32 cid : *componentIDs)
-                if (static_cast<int32>(cid) == compID) { match = true; break; }
-        if (!match) continue;
-
-        // Record option Type+SubType+TextureID from the current mesh to preserve during respawn
-        uint8 optType = 0, optSubType = 0;
-        int32 optionID = mesh->GetRoomComponentOptionID();
-        if (RoomComponentOptionEntry const* opt = sRoomComponentOptionStore.LookupEntry(static_cast<uint32>(optionID)))
-        {
-            optType = opt->Type;
-            optSubType = opt->SubType;
-        }
-        toDestroy.push_back({ meshGuid, compID, optType, optSubType, mesh->GetRoomComponentTextureID() });
-    }
-
-    // Destroy old meshes
-    for (auto const& info : toDestroy)
-    {
-        MeshObject* mesh = GetMeshObject(info.guid);
-        if (!mesh) continue;
-        mesh->DestroyForNearbyPlayers();
-        RemoveFromMap(mesh, true);
-        auto& guids = meshItr->second;
-        guids.erase(std::remove(guids.begin(), guids.end(), info.guid), guids.end());
-    }
-
-    // Phase 2: Create new meshes for each destroyed mesh, matching by (compID, Type, SubType)
-    // Build a per-compID list of (Type, SubType, TextureID) that need respawning
-    struct RespawnSlot { uint8 optType; uint8 optSubType; int32 textureID; };
-    std::unordered_map<int32, std::vector<RespawnSlot>> compTypeMap;
-    for (auto const& info : toDestroy)
-        compTypeMap[info.compID].push_back({ info.optType, info.optSubType, info.textureID });
-
-    // Look up the room's components from DB2
-    HouseRoomData const* roomData = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
-    if (!roomData)
-        return;
-    std::vector<RoomComponentData> const* components = sHousingMgr.GetRoomComponents(roomData->RoomWmoDataID);
-    if (!components)
-        return;
-
-    uint32 spawnedCount = 0;
-    for (RoomComponentData const& comp : *components)
-    {
-        auto typeItr = compTypeMap.find(static_cast<int32>(comp.ID));
-        if (typeItr == compTypeMap.end())
-            continue;
-
-        Position compPos(comp.OffsetPos[0], comp.OffsetPos[1], comp.OffsetPos[2], 0.0f);
-        QuaternionData compRot;
-        static constexpr float DEG_TO_RAD = static_cast<float>(M_PI / 180.0);
-        float rx = comp.OffsetRot[0] * DEG_TO_RAD;
-        float ry = comp.OffsetRot[1] * DEG_TO_RAD;
-        float rz = -comp.OffsetRot[2] * DEG_TO_RAD;
-        float cx = std::cos(rx / 2.0f), sx = std::sin(rx / 2.0f);
-        float cy = std::cos(ry / 2.0f), sy = std::sin(ry / 2.0f);
-        float cz = std::cos(rz / 2.0f), sz = std::sin(rz / 2.0f);
-        compRot.x = sx * cy * cz - cx * sy * sz;
-        compRot.y = cx * sy * cz + sx * cy * sz;
-        compRot.z = cx * cy * sz - sx * sy * cz;
-        compRot.w = cx * cy * cz + sx * sy * sz;
-
-        // Find all options for new theme
-        auto allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, effectiveThemeID);
-        if (allOptions.empty())
-            allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, factionThemeID);
-        if (allOptions.empty() && factionThemeID != 2)
-            allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, 2);
-        if (allOptions.empty() && factionThemeID != 1)
-            allOptions = sHousingMgr.FindAllRoomComponentOptions(comp.MeshStyleFilterID, 1);
-
-        // For each old mesh's (Type, SubType), find the equivalent in new theme.
-        for (auto const& slot : typeItr->second)
-        {
-            uint8 targetSubType = (overrideSubType >= 0) ? static_cast<uint8>(overrideSubType) : slot.optSubType;
-
-            RoomComponentOptionEntry const* bestOpt = nullptr;
-            for (auto const* opt : allOptions)
-            {
-                // If overrideRoomCompID is set, only match options with that RoomCompID
-                // (used for ceiling/door type selection: normal=0, vaulted=1, etc.)
-                if (overrideRoomCompID >= 0 && opt->RoomComponentID != overrideRoomCompID)
-                    continue;
-                if (opt->Type == slot.optType && opt->SubType == targetSubType)
-                { bestOpt = opt; break; }
-            }
-            // Fallback: match Type only (still respecting RoomCompID filter)
-            if (!bestOpt)
-                for (auto const* opt : allOptions)
-                {
-                    if (overrideRoomCompID >= 0 && opt->RoomComponentID != overrideRoomCompID)
-                        continue;
-                    if (opt->Type == slot.optType) { bestOpt = opt; break; }
-                }
-            // Last resort: any option matching RoomCompID
-            if (!bestOpt)
-                for (auto const* opt : allOptions)
-                {
-                    if (overrideRoomCompID >= 0 && opt->RoomComponentID != overrideRoomCompID)
-                        continue;
-                    bestOpt = opt; break;
-                }
-            if (!bestOpt)
-                continue;
-
-            int32 compFileDataID = bestOpt->ModelFileDataID > 0 ? bestOpt->ModelFileDataID : comp.ModelFileDataID;
-            if (compFileDataID <= 0)
-                continue;
-
-            int32 roomComponentOptionID = static_cast<int32>(bestOpt->ID);
-            int32 houseThemeID = (newThemeID != 0) ? newThemeID : sHousingMgr.GetDefaultSubThemeID(bestOpt->HouseThemeID);
-
-            // Preserve the old mesh's texture during theme respawn (don't reset material).
-            // Only fall back to defaults if the old texture was 0.
-            int32 roomComponentTextureID = slot.textureID;
-            if (roomComponentTextureID == 0)
-            {
-                roomComponentTextureID = sHousingMgr.GetTextureIdForComponentOption(roomComponentOptionID);
-                if (roomComponentTextureID == 0)
-                    roomComponentTextureID = sHousingMgr.GetTextureIdForComponentType(comp.Type);
-            }
-
-            MeshObject* newMesh = MeshObject::CreateMeshObject(this, compPos, compRot, 1.0f,
-                compFileDataID, /*isWMO*/ true, roomHousingGuid, /*attachFlags*/ 3, &roomPos);
-            if (!newMesh) continue;
-
-            PhasingHandler::InitDbPhaseShift(newMesh->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
-            // Set RoomComponentTypeParam to overrideRoomCompID for ceiling/door type changes
-            // so the client's menu reflects the current type (normal=0, vaulted=1, etc.)
-            int32 typeParam = (overrideRoomCompID >= 0) ? overrideRoomCompID : 0;
-
-            newMesh->InitHousingRoomComponentData(roomHousingGuid,
-                roomComponentOptionID, static_cast<int32>(comp.ID),
-                comp.Type, static_cast<int32>(bestOpt->SubType), static_cast<uint8>(bestOpt->Type),
-                houseThemeID, roomComponentTextureID, typeParam,
-                0, 0, 0, 0, 0, 0);
-
-            if (AddToMap(newMesh))
-            {
-                meshItr->second.push_back(newMesh->GetGUID());
-                ++spawnedCount;
-            }
-            else
-                delete newMesh;
-        }
-    }
-
-    // Update the HousingRoomEntity's MeshObjects dynamic array so the client
-    // references the new GUIDs instead of the stale destroyed ones (prevents crash).
-    for (HousingRoomEntity* re : _roomEntities)
-    {
-        if (re && re->GetGUID() == roomGuid)
-        {
-            re->ReplaceMeshObjects(meshItr->second);
-            break;
-        }
-    }
-
-    TC_LOG_INFO("housing", "RespawnRoomComponentsForTheme: room={} theme={} destroyed={} spawned={}",
-        roomGuid.ToString(), newThemeID, toDestroy.size(), spawnedCount);
 }
 
 void HouseInteriorMap::SpawnInteriorDecor(Housing* housing)
@@ -1529,19 +1317,6 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
             SpawnInteriorDecorFromList(ownerPlot->Decor, ownerPlot->HouseGuid);
             _roomsSpawned = true;
 
-            // Place the visitor at the first visual (non-base) room so they
-            // don't spawn inside geometry.
-            for (Housing::Room const& room : ownerPlot->Rooms)
-            {
-                HouseRoomData const* rd = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
-                if (rd && !rd->IsBaseRoom())
-                {
-                    float targetX = _originX + static_cast<float>(room.GridX);
-                    player->Relocate(targetX, _originY, _originZ, player->GetOrientation());
-                    break;
-                }
-            }
-
             TC_LOG_INFO("housing", "HouseInteriorMap::AddPlayerToMap: VISITOR pre-spawn for offline owner {} — {} rooms, {} decor",
                 _owner.ToString(), uint32(ownerPlot->Rooms.size()), uint32(ownerPlot->Decor.size()));
             break;
@@ -1585,18 +1360,8 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
         preloadHousing->PopulateCatalogStorageEntries();
         preloadHousing->SyncUpdateFields();
 
-        // Relocate player to the visual room BEFORE map add so they
-        // spawn at the correct position in the initial UPDATE_OBJECT
-        for (Housing::Room const* room : preloadHousing->GetRooms())
-        {
-            HouseRoomData const* rd = sHousingMgr.GetHouseRoomData(room->RoomEntryId);
-            if (rd && !rd->IsBaseRoom())
-            {
-                float targetX = _originX + static_cast<float>(room->GridX);
-                player->Relocate(targetX, _originY, _originZ, player->GetOrientation());
-                break;
-            }
-        }
+        // The player stays where the transfer put them: the entry hall at the interior origin, facing the
+        // house (retail SMSG_NEW_WORLD -1000/-1000/0.1, no teleport afterwards).
 
         // The interior plot AreaTrigger is created in the DEFERRED callback,
         // NOT here. If we AddToMap now, the visibility system includes it in
@@ -1698,24 +1463,6 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
                 "roomMeshObjects entries={} decorGuidToObj entries={}",
                 uint32(_roomMeshObjects.size()), uint32(_decorGuidToObjGuid.size()));
 
-            // Teleport player to the center of the first visual room.
-            // Player spawns at INTERIOR_ORIGIN (slot 0) but the visual room may be at a different slot.
-            for (Housing::Room const* room : housing->GetRooms())
-            {
-                HouseRoomData const* roomData2 = sHousingMgr.GetHouseRoomData(room->RoomEntryId);
-                if (roomData2 && !roomData2->IsBaseRoom())
-                {
-                    float targetX = _originX + static_cast<float>(room->GridX);
-                    float targetY = _originY;
-                    float targetZ = _originZ;
-                    TC_LOG_ERROR("housing", "HouseInteriorMap::AddPlayerToMap: Teleporting player to visual room "
-                        "entry={} slot={} at ({:.1f},{:.1f},{:.1f})",
-                        room->RoomEntryId, room->SlotIndex, targetX, targetY, targetZ);
-                    player->NearTeleportTo(targetX, targetY, targetZ, player->GetOrientation());
-                    break;
-                }
-            }
-
             // Toggle WS[30906]=1 to signal the client that the player is inside a house interior.
             // Sent synchronously so the client knows it's an interior before deferred packets.
             player->SendUpdateWorldState(WORLDSTATE_HOUSING_INTERIOR, 1);
@@ -1804,120 +1551,10 @@ bool HouseInteriorMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/
                         p->SendDirectMessage(initStatus.Write());
                     }
 
-                    // 7) Create AND send the interior plot AreaTrigger LAST.
-                    // The AT must be created here (not in pre-spawn) because if it's
-                    // on the map during AddPlayerToMap, the visibility system includes
-                    // it in the initial UPDATE_OBJECT — before Status+Permissions.
-                    // Retail sends the AT in a separate UPDATE_OBJECT (#11752) AFTER
-                    // the main entity data. The client fires HOUSE_PLOT_ENTERED on AT
-                    // receipt and immediately checks IsHouseEditorStatusAvailable(),
-                    // which requires permissions to already be set.
-                    if (_interiorPlotAT.IsEmpty())
-                    {
-                        float atX = _originX;
-                        float atY = _originY;
-                        float atZ = _originZ;
-                        LoadGrid(atX, atY);
-
-                        Position atPos(atX, atY, atZ, 0.0f);
-                        AreaTrigger* plotAt = AreaTrigger::CreateStaticAreaTrigger(
-                            { .Id = 37358, .IsCustom = false }, this, atPos, -1, /*addToMap*/ false);
-
-                        if (plotAt)
-                        {
-                            PhasingHandler::InitDbPhaseShift(plotAt->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
-                            // 12.0.5: FHousingPlotAreaTrigger_C fragment removed. Plot ownership
-                            // propagates via PlayerHouseInfoComponentData.CurrentHouse; AT only
-                            // carries its own visual fields.
-                            plotAt->InitHousingPlotVisuals();
-
-                            if (AddToMap(plotAt))
-                            {
-                                _interiorPlotAT = plotAt->GetGUID();
-
-                                // Send CREATE directly to the player (visibility system
-                                // won't send it since the player is already on the map)
-                                UpdateData atUpdate(p->GetMapId());
-                                plotAt->BuildCreateUpdateBlockForPlayer(&atUpdate, p);
-                                p->m_clientGUIDs.insert(plotAt->GetGUID());
-
-                                WorldPacket atPacket;
-                                atUpdate.BuildPacket(&atPacket);
-                                p->SendDirectMessage(&atPacket);
-
-                                TC_LOG_ERROR("housing", "HouseInteriorMap deferred: Created+sent interior plot AT "
-                                    "guid={} at ({:.1f},{:.1f},{:.1f}) plotIndex={} for {}",
-                                    plotAt->GetGUID().ToString(), atX, atY, atZ,
-                                    housing->GetPlotIndex(), playerGuid.ToString());
-
-                                // 8) Plot enter spell packets — same as exterior AT overlap.
-                                // Sniff-verified: exterior sends 3 spell+aura sequences
-                                // (1239847@slot50, 469226@slot56, 1266699@slot9) before
-                                // ENTER_PLOT. These trigger editor availability on the client.
-                                {
-                                    plotAt->SetAreaTriggerFlag(AreaTriggerFieldFlags::HasPlayers);
-
-                                    // Spell 1239847 at slot 50 (plot enter tracking)
-                                    {
-                                        ObjectGuid castId = ObjectGuid::Create<HighGuid::Cast>(
-                                            SPELL_CAST_SOURCE_NORMAL, p->GetMapId(), SPELL_HOUSING_PLOT_ENTER,
-                                            GenerateLowGuid<HighGuid::Cast>());
-                                        WorldPackets::Spells::AuraUpdate au;
-                                        au.UpdateAll = false;
-                                        au.UnitGUID = p->GetGUID();
-                                        WorldPackets::Spells::AuraInfo ai;
-                                        ai.Slot = 55; // sniff-verified: retail uses slot 55
-                                        ai.AuraData.emplace();
-                                        ai.AuraData->CastID = castId;
-                                        ai.AuraData->SpellID = SPELL_HOUSING_PLOT_ENTER;
-                                        ai.AuraData->Flags = AFLAG_SELF_CAST;
-                                        ai.AuraData->ActiveFlags = 1; // sniff-verified: retail uses 1
-                                        ai.AuraData->CastLevel = 36;
-                                        au.Auras.push_back(std::move(ai));
-                                        p->SendDirectMessage(au.Write());
-                                    }
-
-                                    // Spell 469226 at slot 56 (plot context)
-                                    {
-                                        ObjectGuid castId = ObjectGuid::Create<HighGuid::Cast>(
-                                            SPELL_CAST_SOURCE_NORMAL, p->GetMapId(), SPELL_HOUSING_PLOT_PRESENCE,
-                                            GenerateLowGuid<HighGuid::Cast>());
-                                        WorldPackets::Spells::AuraUpdate au;
-                                        au.UpdateAll = false;
-                                        au.UnitGUID = p->GetGUID();
-                                        WorldPackets::Spells::AuraInfo ai;
-                                        ai.Slot = 56;
-                                        ai.AuraData.emplace();
-                                        ai.AuraData->CastID = castId;
-                                        ai.AuraData->SpellID = SPELL_HOUSING_PLOT_PRESENCE;
-                                        ai.AuraData->Flags = AFLAG_SELF_CAST;
-                                        ai.AuraData->ActiveFlags = 1;
-                                        ai.AuraData->CastLevel = 36;
-                                        au.Auras.push_back(std::move(ai));
-                                        p->SendDirectMessage(au.Write());
-                                    }
-
-                                    TC_LOG_ERROR("housing", "HouseInteriorMap deferred: Sent plot enter spells (slots 50+56) for {}",
-                                        playerGuid.ToString());
-                                }
-
-                                // 12.0.5: SMSG_NEIGHBORHOOD_PLAYER_ENTER_PLOT is gone. The
-                                // HOUSE_PLOT_ENTERED client event is now triggered by the
-                                // UPDATE_OBJECT carrying PlayerHouseInfoComponent.CurrentHouse.
-                                // Set CurrentHouse to the house GUID for the interior plot.
-                                if (Housing const* ownerHousingForCurrent = GetOwnerHousing())
-                                    p->SetCurrentHouse(ownerHousingForCurrent->GetHouseGuid());
-
-                                TC_LOG_ERROR("housing", "HouseInteriorMap deferred: Set CurrentHouse for {} (Status+Perms reactive via CMSG handlers)",
-                                    playerGuid.ToString());
-                            }
-                            else
-                            {
-                                TC_LOG_ERROR("housing", "HouseInteriorMap deferred: AddToMap failed for interior plot AT");
-                                delete plotAt;
-                            }
-                        }
-                    }
+                    // No plot AreaTrigger, plot-enter auras or CurrentHouse inside the house: the 12.1.0.69933 interior
+                    // sniffs have none of them (CurrentHouse stays empty, the only type-11-free entities are rooms, house,
+                    // account and decor). The interior AT we used to add kept the client's editor camera tied to a plot
+                    // that no longer existed once the player walked out of the house.
 
                     // 10) Spawn the interior exit door — blizzlike decor entity + GO hierarchy.
                     // Retail sniff: A HousingDecorEntity (Object Type 18, Housing/56 GUID) with
@@ -2135,7 +1772,19 @@ void HouseInteriorMap::RemovePlayerFromMap(Player* player, bool remove)
 {
     Housing* housing = player->GetHousing();
     if (housing)
+    {
         housing->SetInInterior(false);
+
+        // Leaving by any path (hearthstone, teleport, logout) must not carry an editor out of the house:
+        // the layout editor's stun/no-gravity aura and the editing context would stick to the player.
+        if (player->GetGUID() == _owner && housing->GetEditorMode() != HOUSING_EDITOR_MODE_NONE)
+        {
+            housing->SetEditorMode(HOUSING_EDITOR_MODE_NONE);
+            player->RemoveUnitFlag(UNIT_FLAG_PACIFIED);
+            player->RemoveUnitFlag2(UNIT_FLAG2_NO_ACTIONS);
+            player->ReplaceAllSilencedSchoolMask(SpellSchoolMask(0));
+        }
+    }
 
     // Toggle WS[30906]=0 to signal the client that the player left the house interior.
     player->SendUpdateWorldState(WORLDSTATE_HOUSING_INTERIOR, 0);

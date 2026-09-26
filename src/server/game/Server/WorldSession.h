@@ -1735,7 +1735,10 @@ class TC_GAME_API WorldSession
         // Housing - Room System
         // Adds a room at a door of an existing room (CMSG_HOUSING_ROOM_ADD, room blueprint imports): places it, spawns it in the
         // owner's interior and connects the door. Sends no response.
-        HousingResult AddHousingRoomAtDoor(Housing* housing, uint32 targetDoorComponentID, uint32 houseRoomID, ObjectGuid* outRoomGuid,
+        // Takes the player out of the house interior they stand in, to the front of its door on the plot, and clears
+        // the house state (CMSG_HOUSE_INTERIOR_LEAVE_HOUSE, spell 1234193 "Leave House" cast by the interior door).
+        void LeaveHouseInterior();
+        HousingResult AddHousingRoomAtDoor(Housing* housing, ObjectGuid sourceRoomGuid, uint32 targetDoorComponentID, uint32 houseRoomID, ObjectGuid* outRoomGuid,
             std::function<void(HousingResult)> const& onPlaced = nullptr);
         // Rebuilds everything spawned for this house on the map the player is on after a blueprint import.
         void RespawnHousingAfterBlueprintImport(Player* player, Housing* housing, bool interiorChanged, bool exteriorChanged,

@@ -71,6 +71,10 @@ public:
         // plot at map init without needing a live Housing object.
         uint32 HouseType = 0;
 
+        // Mirrored from character_housing.posX/posY/posZ/facing: where the owner moved the house (unset = the plot's
+        // default spot), so it is built there at map load even with the owner offline.
+        Optional<Position> HousePosition;
+
         // Mirrored from character_housing_fixtures. Key = FixturePointId (DB2
         // ExteriorComponentHook slot), value = FixtureOptionId (DB2
         // ExteriorComponent override). Drives the correct roof/doors/windows
@@ -165,6 +169,7 @@ public:
     HousingResult PurchasePlot(ObjectGuid playerGuid, uint8 plotIndex);
     void UpdatePlotHouseInfo(uint8 plotIndex, ObjectGuid houseGuid, ObjectGuid ownerBnetGuid);
     void UpdatePlotSettingsFlags(ObjectGuid ownerGuid, uint32 settingsFlags);
+    void UpdatePlotHousePosition(ObjectGuid ownerGuid, Optional<Position> const& housePosition);
     HousingResult MoveHouse(ObjectGuid sourcePlotOwner, uint8 newPlotIndex);
     void SetPlotAreaTriggerGuid(uint8 plotIndex, ObjectGuid atGuid);
     // m2/A5: free the plot owned by `ownerGuid` on house delete / kiosk reset so

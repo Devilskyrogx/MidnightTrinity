@@ -24,7 +24,10 @@
 #include <vector>
 
 class HousingRoomEntity;
+class MeshObject;
 class Player;
+struct RoomComponentData;
+struct RoomComponentOptionEntry;
 
 /// Map instance for a player's house interior (MAP_HOUSE_INTERIOR = 7, MapID 2783).
 /// Each player/account gets their own instance of this map. The interior is a
@@ -76,24 +79,26 @@ public:
     void UpdateRoomComponentTextures(ObjectGuid roomGuid, Housing::Room const& room,
         std::vector<uint32> const* componentIDs, int32 textureID);
 
-    /// Respawn room component MeshObjects for a theme change.
-    /// Theme changes require new models (different FileDataIDs), so we DESTROY old
-    /// meshes and CREATE new ones with new GUIDs. The client expects this pattern
-    /// (sniff shows walls disappearing and reappearing during theme changes).
-    /// @param overrideSubType    If >= 0, forces SubType match for new options.
-    /// @param overrideRoomCompID If >= 0, only spawns options with matching RoomCompID.
-    ///                           Used by SET_CEILING_TYPE/SET_DOOR_TYPE to select the
-    ///                           correct model variant (normal=0, vaulted=1, etc.).
-    void RespawnRoomComponentsForTheme(ObjectGuid roomGuid, int32 factionRestriction,
-        Housing::Room const& room, std::vector<uint32> const* componentIDs, int32 newThemeID,
-        int32 overrideSubType = -1, int32 overrideRoomCompID = -1);
+    /// Rebuild some component slots of one room from its stored look (theme, ceiling shape), the way retail
+    /// answers a restyle: DESTROY of the slot's pieces, CREATE of the new ones.
+    void RebuildRoomComponents(std::vector<Housing::Room const*> const& rooms, Housing::Room const& room,
+        int32 factionRestriction, std::vector<uint32> const& componentIds);
 
     /// Despawn a single room's entities (MeshObjects + HousingRoomEntity).
     void DespawnRoomEntities(ObjectGuid roomGuid);
 
-    /// Replace a wall MeshObject with DoorwayWall+Doorway pair for an active connection.
-    void ReplaceWallWithDoorway(ObjectGuid roomGuid, uint32 doorComponentID,
-        int32 factionRestriction, Housing::Room const& room, ObjectGuid newRoomGuid);
+    /// After a layout edit (room added/removed/turned, door style picked): rebuild the door slots whose
+    /// look changed and re-point every spawned room's door list.
+    void RefreshRoomDoors(std::vector<Housing::Room const*> const& rooms, int32 factionRestriction);
+
+    /// Move/turn a spawned room entity to its stored placement (its meshes and decor follow on the client).
+    void UpdateRoomPlacement(Housing::Room const& room);
+
+    /// True when the position lies inside one of the rooms (its RoomWmoData box, on its floor).
+    bool IsInsideAnyRoom(Position const& pos, std::vector<Housing::Room const*> const& rooms) const;
+
+    /// Where the house puts people: the entry hall at the interior origin (SMSG_NEW_WORLD on entry).
+    Position GetEntryPosition() const { return Position(_originX, _originY, _originZ, 0.0f); }
 
     /// Spawn all placed decor for the owner's house on the interior map.
     void SpawnInteriorDecor(Housing* housing);
@@ -130,6 +135,31 @@ public:
     void GrantHousingTutorialProgress(Player* player);
 
 private:
+    /// A door slot that meets another room.
+    struct DoorwayState
+    {
+        ObjectGuid AttachedRoom;
+        bool Owner = false;     ///< this side builds the doorway (Housing::OwnsDoorway)
+        uint8 Variant = 0;      ///< RoomComponentOption.RoomComponentID of the doorway pieces
+    };
+
+    Position GetRoomWorldPosition(Housing::Room const& room) const;
+    HousingRoomEntity* FindRoomEntity(ObjectGuid roomGuid) const;
+    /// The HouseTheme a slot is built with: its own, else the room's per-surface/legacy theme, else the faction's.
+    static int32 GetComponentThemeID(Housing::Room const& room, RoomComponentData const& comp, int32 factionThemeID);
+    /// FHousingRoomComponentMesh HouseThemeID of a piece: the slot's sub-theme when it belongs to the option's theme.
+    static int32 GetComponentHouseThemeID(Housing::Room const& room, RoomComponentData const& comp, RoomComponentOptionEntry const* option);
+    /// Stairwell halves leave out the shaft between them (lower: ceiling, upper: floor and stairs).
+    static bool IsComponentHidden(std::vector<Housing::Room const*> const& rooms, Housing::Room const& room, RoomComponentData const& comp);
+    void ReplaceSlotMeshes(Housing::Room const& room, RoomComponentData const& comp,
+        std::vector<RoomComponentOptionEntry const*> const& wanted, Position const& roomPos, std::vector<ObjectGuid>& roomMeshes);
+    static std::unordered_map<uint32 /*componentId*/, DoorwayState> GetDoorwayStates(std::vector<Housing::Room const*> const& rooms, Housing::Room const& room);
+    /// The RoomComponentOption rows one component slot is built from.
+    static std::vector<RoomComponentOptionEntry const*> SelectComponentOptions(Housing::Room const& room, RoomComponentData const& comp,
+        int32 factionThemeID, DoorwayState const* doorway);
+    MeshObject* CreateRoomComponentMesh(Housing::Room const& room, RoomComponentData const& comp,
+        RoomComponentOptionEntry const* option, Position const& roomPos);
+
     ObjectGuid _owner;
     Player* _loadingPlayer; ///< @workaround Player not in ObjectAccessor during login
     uint32 _sourceNeighborhoodMapId;
@@ -149,10 +179,6 @@ private:
 
     /// HousingRoomEntity instances (objectType=18, Housing/2 GUIDs) for the layout editor
     std::vector<HousingRoomEntity*> _roomEntities;
-
-    /// GUID of the interior plot AreaTrigger (entry 37358, FHousingPlotAreaTrigger_C).
-    /// The client fires HOUSE_PLOT_ENTERED when it sees this AT, enabling housing CMSGs.
-    ObjectGuid _interiorPlotAT;
 };
 
 #endif // HouseInteriorMap_h__

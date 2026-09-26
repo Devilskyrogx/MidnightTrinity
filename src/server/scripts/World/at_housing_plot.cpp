@@ -151,10 +151,16 @@ struct at_housing_plot : AreaTriggerAI
         if (isOwnPlot)
         {
             ObjectGuid playerGuid = player->GetGUID();
-            player->m_Events.AddEventAtOffset([playerGuid]()
+            player->m_Events.AddEventAtOffset([playerGuid, plotIdx]()
             {
                 Player* p = ObjectAccessor::FindPlayer(playerGuid);
                 if (!p || !p->IsInWorld())
+                    return;
+
+                // Only while still on that plot. Retail never changes phases inside the house (one
+                // PHASE_SHIFT_CHANGE per map arrival); a late shift there left the camera behind on the way out.
+                HousingMap* map = dynamic_cast<HousingMap*>(p->GetMap());
+                if (!map || map->GetPlayerCurrentPlot(playerGuid) != plotIdx)
                     return;
 
                 for (uint32 i = 0; i < HOUSING_COSMETIC_PHASE_COUNT; ++i)
@@ -207,10 +213,20 @@ struct at_housing_plot : AreaTriggerAI
         // the interior — the map transfer would erase interior editor state otherwise.
         if (isOwnPlot)
         {
-            if (Housing const* housing = player->GetHousing())
+            if (Housing* housing = player->GetHousing())
             {
                 if (!housing->IsInInterior())
                 {
+                    // Walking off the plot closes the editor on the client without a CMSG. Drop it here as well,
+                    // otherwise the next plot entry reports it active and the client opens it again.
+                    if (housing->GetEditorMode() != HOUSING_EDITOR_MODE_NONE)
+                    {
+                        housing->SetEditorMode(HOUSING_EDITOR_MODE_NONE);
+                        player->RemoveUnitFlag(UNIT_FLAG_PACIFIED);
+                        player->RemoveUnitFlag2(UNIT_FLAG2_NO_ACTIONS);
+                        player->ReplaceAllSilencedSchoolMask(SpellSchoolMask(0));
+                    }
+
                     WorldPackets::Housing::HousingHouseStatusResponse statusResponse;
                     statusResponse.HouseGuid = housing->GetHouseGuid();
                     statusResponse.AccountGuid = player->GetSession()->GetBattlenetAccountGUID();
@@ -228,10 +244,16 @@ struct at_housing_plot : AreaTriggerAI
         if (isOwnPlot)
         {
             ObjectGuid playerGuid = player->GetGUID();
-            player->m_Events.AddEventAtOffset([playerGuid]()
+            player->m_Events.AddEventAtOffset([playerGuid, plotIdx]()
             {
                 Player* p = ObjectAccessor::FindPlayer(playerGuid);
                 if (!p || !p->IsInWorld())
+                    return;
+
+                // Only while still in the neighborhood and off that plot - not after walking into the house
+                // (retail never changes phases inside it) or back onto the plot.
+                HousingMap* map = dynamic_cast<HousingMap*>(p->GetMap());
+                if (!map || map->GetPlayerCurrentPlot(playerGuid) == plotIdx)
                     return;
 
                 for (uint32 i = 0; i < HOUSING_COSMETIC_PHASE_COUNT; ++i)

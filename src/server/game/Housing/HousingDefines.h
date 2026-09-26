@@ -861,6 +861,13 @@ static constexpr uint32 NPC_KILL_CREDIT_BUY_HOME        = 248858;
 // Sniff: aura slot 51, Flags=NoCaster, ActiveFlags=15, CastLevel=36
 static constexpr uint32 SPELL_HOUSING_EDIT_MODE_AURA    = 1263303;
 
+// "[DNT] Decorating - Disable All the Things - Room Editor": room layout mode (stun + no gravity, pacify, immunity)
+// Sniff: aura slot 116, Flags=NoCaster, ActiveFlags=15, cast on CMSG_HOUSING_ROOM_SET_LAYOUT_EDIT_MODE
+static constexpr uint32 SPELL_HOUSING_ROOM_EDIT_MODE_AURA = 1263316;
+
+// "Leave House" (effect 343): cast by the interior door after it opens; takes the player out to the plot
+static constexpr uint32 SPELL_HOUSING_LEAVE_HOUSE       = 1234193;
+
 // Spell applied when player enters their own housing plot
 // Sniff: aura slot 50/55, Flags=NoCaster, ActiveFlags=1-2, CastLevel=36
 static constexpr uint32 SPELL_HOUSING_PLOT_ENTER        = 1239847;

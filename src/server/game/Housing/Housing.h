@@ -26,6 +26,7 @@
 #include "Position.h"
 #include <array>
 #include <atomic>
+#include <map>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -89,8 +90,13 @@ public:
         uint32 FloorTextureId = 0;    // RoomComponentTexture ID for floors
         uint32 CeilingTextureId = 0;  // RoomComponentTexture ID for ceilings
         int32 ColorOverride = -1;     // Shared color override (-1 = default)
-        uint32 DoorTypeId = 0;
+        uint32 DoorTypeId = 0;        // last SET_DOOR_TYPE (component, variant); blueprints carry this pair
         uint8 DoorSlot = 0;
+        std::map<uint32 /*componentId*/, uint8 /*variant*/> DoorTypes; // doorway style of each door
+        // Look of each component slot (12.1.0.69933: SET_COMPONENT_THEME / APPLY_COMPONENT_MATERIALS name the slots
+        // they change). Slots without an entry fall back to the per-surface fields above.
+        std::map<uint32 /*componentId*/, uint32 /*HouseThemeID*/> ComponentThemes;
+        std::map<uint32 /*componentId*/, uint32 /*RoomComponentTextureID*/> ComponentTextures;
         uint32 CeilingTypeId = 0;
         uint8 CeilingSlot = 0;
     };
@@ -230,6 +236,48 @@ public:
     void ReplaceFixtures(std::vector<Fixture> const& fixtures);
     std::unordered_map<ObjectGuid, Room> const& GetRoomsMap() const { return _rooms; }
 
+    // Interior layout geometry (retail 12.1.0.69933). A room sits at (GridX, GridY) yards from the interior origin and
+    // turns counter-clockwise in quarter steps (Orientation * pi/2). Its doors are the connectable wall slots on the
+    // horizontal plane; two rooms on one floor are connected where a door of each meets at the same point. A stairwell
+    // also lists its connectable floor and ceiling: those link the two stacked halves of the stairwell.
+    struct RoomDoor
+    {
+        uint32 ComponentId = 0;
+        uint8 ComponentType = 0; // HousingRoomComponentType (FHousingDoorData.RoomComponentType: 1 wall, 2 floor, 3 ceiling)
+        Position Local;          // RoomComponent.OffsetPos (FHousingDoorData.RoomComponentOffset)
+        float X = 0.0f;          // door point, grid space
+        float Y = 0.0f;
+        int32 DirX = 0;          // outward direction, grid space
+        int32 DirY = 0;
+        int32 DirZ = 0;          // -1 floor / +1 ceiling of a stairwell, 0 for walls
+
+        bool IsVertical() const { return DirZ != 0; }
+    };
+
+    // character_housing_rooms.doorTypes: "componentId:variant,componentId:variant"
+    static std::string SerializeDoorTypes(Room const& room);
+    static void LoadDoorTypes(Room& room, std::string const& doorTypes);
+    static std::string SerializeComponentStyles(Room const& room);
+    static void LoadComponentStyles(Room& room, std::string const& componentStyles);
+
+    static void RotateRoomOffset(float x, float y, uint32 orientation, float& outX, float& outY);
+    static std::vector<RoomDoor> GetRoomDoors(uint32 roomEntryId, float gridX, float gridY, uint32 orientation);
+    static std::vector<RoomDoor> GetRoomDoors(Room const& room) { return GetRoomDoors(room.RoomEntryId, float(room.GridX), float(room.GridY), room.Orientation); }
+    // The room whose door meets `door` of `room` (and that door's component), or nullptr.
+    static Room const* FindRoomAtDoor(std::vector<Room const*> const& rooms, Room const& room, RoomDoor const& door, uint32* outComponentId = nullptr);
+    // Which side of a connection builds the doorway: never the base room, otherwise the lower slot.
+    static bool OwnsDoorway(Room const& room, Room const& other);
+    // Door variant of a connection (RoomComponentOption.RoomComponentID): the one picked for either side, else 2.
+    static uint8 GetDoorwayVariant(Room const& room, uint32 componentId, Room const& other, uint32 otherComponentId);
+    // True when a room of this kind at this placement does not overlap any other room on its floor.
+    static bool RoomFits(std::vector<Room const*> const& rooms, uint32 roomEntryId, int32 gridX, int32 gridY, int32 floorIndex,
+        uint32 orientation, ObjectGuid ignoreRoom = ObjectGuid::Empty);
+    // Places a room of this kind, turned to `orientation`, so that one of its doors faces `target`. Fills the grid position.
+    static bool FitRoomToDoor(std::vector<Room const*> const& rooms, uint32 roomEntryId, int32 floorIndex, RoomDoor const& target,
+        uint32 orientation, ObjectGuid ignoreRoom, int32& gridX, int32& gridY);
+    // Stairwells are two stacked rooms at one XY; returns the other half, or nullptr.
+    Room const* FindStairwellPartner(Room const& room) const;
+
     // Fixture operations
     HousingResult SelectFixtureOption(uint32 fixturePointId, uint32 optionId, std::vector<uint32>* removedHookIDs = nullptr);
     // Re-keys the fixtures on oldCompId's hooks to the equivalent hooks (same fixture type and rank) of newCompId.
@@ -320,6 +368,11 @@ private:
     // Room connectivity helpers
     ObjectGuid FindBaseRoomGuid() const;
     bool IsRoomGraphConnectedWithout(ObjectGuid excludeRoomGuid) const;
+    // Room budget cost of a room at this spot: the upper half of a stairwell (a stairs room stacked on another one) is free,
+    // the stairwell was paid for once.
+    uint32 GetRoomWeightCost(uint32 roomEntryId, int32 gridX, int32 gridY, int32 floorIndex, ObjectGuid self) const;
+    // Re-places a room (grid position + orientation) and carries its placed decor along. Persists both.
+    void SetRoomPlacement(Room& room, int32 gridX, int32 gridY, uint32 orientation);
 
     // Immediate DB persistence helpers
     void PersistRoomToDB(ObjectGuid roomGuid, Room const& room);

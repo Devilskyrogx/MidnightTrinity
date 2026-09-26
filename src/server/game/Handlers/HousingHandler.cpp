@@ -56,6 +56,7 @@
 #include "UpdateData.h"
 #include "World.h"
 #include "WorldStatePackets.h"
+#include <algorithm>
 
 namespace
 {
@@ -483,6 +484,11 @@ void WorldSession::HandleHouseExteriorLock(WorldPackets::Housing::HouseExteriorL
 // ============================================================
 
 void WorldSession::HandleHouseInteriorLeaveHouse(WorldPackets::Housing::HouseInteriorLeaveHouse const& /*houseInteriorLeaveHouse*/)
+{
+    LeaveHouseInterior();
+}
+
+void WorldSession::LeaveHouseInterior()
 {
     Player* player = GetPlayer();
     if (!player)
@@ -2618,6 +2624,11 @@ void WorldSession::HandleHousingRoomSetLayoutEditMode(WorldPackets::Housing::Hou
 
     housing->SetEditorMode(housingRoomSetLayoutEditMode.Active ? HOUSING_EDITOR_MODE_LAYOUT : HOUSING_EDITOR_MODE_NONE);
 
+    // Retail roots the player with gravity off for the blueprint view: spell 1263316 (stun + disable gravity,
+    // pacify/silence, immunity) goes out before the response. SetEditorMode drops it again on exit.
+    if (housingRoomSetLayoutEditMode.Active)
+        player->CastSpell(player, SPELL_HOUSING_ROOM_EDIT_MODE_AURA, true);
+
     // Sniff-verified: retail sets UNIT_FLAG_PACIFIED, UNIT_FLAG2_NO_ACTIONS,
     // and SilencedSchoolMask=127 during layout edit mode. These prevent casting/actions
     // and are included in the same UpdateObject that carries EditorMode.
@@ -2654,17 +2665,9 @@ void WorldSession::HandleHousingRoomSetLayoutEditMode(WorldPackets::Housing::Hou
     response.Active = housingRoomSetLayoutEditMode.Active;
     SendPacket(response.Write());
 
-    // Sync entity data for layout mode (enter needs budget values)
-    if (housingRoomSetLayoutEditMode.Active)
-    {
-        housing->ResetStoragePopulated();
-        housing->PopulateCatalogStorageEntries();
-        housing->SyncUpdateFields();
-    }
-
-    // Sniff-verified: UPDATE_OBJECT (~56B) follows response for BOTH enter AND exit.
-    // This carries EditorMode + UNIT_FLAG_PACIFIED + UNIT_FLAG2_NO_ACTIONS + SilencedSchoolMask.
-    // On enter, also include account/entity data for the layout editor budgets.
+    // Sniff-verified: UPDATE_OBJECT (~56B) follows response for BOTH enter AND exit, carrying only the player
+    // (EditorMode + UNIT_FLAG_PACIFIED + UNIT_FLAG2_NO_ACTIONS + SilencedSchoolMask). Retail never touches the account
+    // or house entities here - the client already holds the room budgets.
     {
         player->BuildUpdateChangesMask();
 
@@ -2672,37 +2675,10 @@ void WorldSession::HandleHousingRoomSetLayoutEditMode(WorldPackets::Housing::Hou
         WorldPacket updatePacket;
         player->BuildValuesUpdateBlockForPlayer(&updateData, player);
 
-        if (housingRoomSetLayoutEditMode.Active)
-        {
-            GetBattlenetAccount().BuildUpdateChangesMask();
-            GetHousingPlayerHouseEntity().BuildUpdateChangesMask();
-
-            if (player->HaveAtClient(&GetBattlenetAccount()))
-                GetBattlenetAccount().BuildValuesUpdateBlockForPlayer(&updateData, player);
-            else
-            {
-                GetBattlenetAccount().BuildCreateUpdateBlockForPlayer(&updateData, player);
-                player->m_clientGUIDs.insert(GetBattlenetAccount().GetGUID());
-            }
-
-            if (player->HaveAtClient(&GetHousingPlayerHouseEntity()))
-                GetHousingPlayerHouseEntity().BuildValuesUpdateBlockForPlayer(&updateData, player);
-            else
-            {
-                GetHousingPlayerHouseEntity().BuildCreateUpdateBlockForPlayer(&updateData, player);
-                player->m_clientGUIDs.insert(GetHousingPlayerHouseEntity().GetGUID());
-            }
-        }
-
         updateData.BuildPacket(&updatePacket);
         player->SendDirectMessage(&updatePacket);
 
         player->ClearUpdateMask(false);
-        if (housingRoomSetLayoutEditMode.Active)
-        {
-            GetBattlenetAccount().ClearUpdateMask(true);
-            GetHousingPlayerHouseEntity().ClearUpdateMask(true);
-        }
     }
 
     TC_LOG_DEBUG("housing", "CMSG_HOUSING_ROOM_SET_LAYOUT_EDIT_MODE Active={}", housingRoomSetLayoutEditMode.Active);
@@ -2736,7 +2712,7 @@ void WorldSession::HandleHousingRoomAdd(WorldPackets::Housing::HousingRoomAdd co
     }
 
     ObjectGuid newRoomGuid;
-    HousingResult result = AddHousingRoomAtDoor(housing, housingRoomAdd.TargetDoorComponentID, housingRoomAdd.HouseRoomID, &newRoomGuid,
+    HousingResult result = AddHousingRoomAtDoor(housing, housingRoomAdd.SourceRoomGuid, housingRoomAdd.TargetDoorComponentID, housingRoomAdd.HouseRoomID, &newRoomGuid,
         [&](HousingResult placeResult)
     {
         // Sniff order: the response goes out before the new room's objects.
@@ -2750,115 +2726,69 @@ void WorldSession::HandleHousingRoomAdd(WorldPackets::Housing::HousingRoomAdd co
         housingRoomAdd.TargetDoorComponentID, housingRoomAdd.HouseRoomID, newRoomGuid.ToString(), uint32(result));
 }
 
-HousingResult WorldSession::AddHousingRoomAtDoor(Housing* housing, uint32 targetDoorComponentID, uint32 houseRoomID, ObjectGuid* outRoomGuid,
-    std::function<void(HousingResult)> const& onPlaced /*= nullptr*/)
+HousingResult WorldSession::AddHousingRoomAtDoor(Housing* housing, ObjectGuid sourceRoomGuid, uint32 targetDoorComponentID, uint32 houseRoomID,
+    ObjectGuid* outRoomGuid, std::function<void(HousingResult)> const& onPlaced /*= nullptr*/)
 {
-    // The CMSG sends TargetDoorComponentID — find which room owns this door,
-    // determine the door's direction, and compute the 2D grid position for the new room.
-    int32 newGridX = 0, newGridY = 0, newFloorIndex = 0;
-    uint32 nextSlot = 0;
+    // Retail (12.1.0.69933 sniff): the new room is turned so that its first door (by component) that can face the
+    // picked door does, and is placed so the two doors meet - e.g. a T room on a corridor's +X door came in at
+    // yaw pi/2 with its +Y door on the corridor. Component IDs repeat across rooms of the same kind, so the source
+    // room comes from the packet, not from a component search.
+    int32 gridX = 0, gridY = 0, floorIndex = 0;
+    uint32 orientation = 0;
+    HousingResult placement = HOUSING_RESULT_ROOM_NOT_FOUND;
+
+    if (Housing::Room const* source = housing->GetRoom(sourceRoomGuid))
     {
-        // Find the source room that owns the target door component
-        uint32 doorCompId = targetDoorComponentID;
-        for (auto const& [guid, room] : housing->GetRoomsMap())
+        std::vector<Housing::Room const*> rooms = housing->GetRooms();
+        std::vector<Housing::RoomDoor> sourceDoors = Housing::GetRoomDoors(*source);
+        auto door = std::find_if(sourceDoors.begin(), sourceDoors.end(),
+            [&](Housing::RoomDoor const& d) { return d.ComponentId == targetDoorComponentID; });
+
+        if (door != sourceDoors.end() && !door->IsVertical())
         {
-            if (room.SlotIndex >= nextSlot)
-                nextSlot = room.SlotIndex + 1;
-
-            // Check if this room contains the target door component
-            HouseRoomData const* rd = sHousingMgr.GetHouseRoomData(room.RoomEntryId);
-            if (!rd) continue;
-            std::vector<RoomComponentData> const* comps = sHousingMgr.GetRoomComponents(rd->RoomWmoDataID);
-            if (!comps) continue;
-
-            for (auto const& comp : *comps)
+            floorIndex = source->FloorIndex;
+            if (Housing::FindRoomAtDoor(rooms, *source, *door))
+                placement = HOUSING_RESULT_INVALID_ROOM_LAYOUT; // door already taken
+            else
             {
-                if (comp.ID == doorCompId)
+                placement = HOUSING_RESULT_ROOM_PLACEMENT_OUT_OF_BOUNDS;
+                for (uint32 candidate = 0; candidate < 4; ++candidate)
                 {
-                    // Compute new room position from door offsets.
-                    // newCenter = sourceCenter + sourceDoorOffset - newDoorOffset
-                    // where newDoorOffset is the OPPOSITE door of the new room.
-                    // Source door at +12 → new room's left door at -12 → spacing = 24.
-                    // Source door at +3 → new room's left door at -12 → spacing = 15.
-                    float sourceDoorOffset = 0.0f;
-                    float newDoorOffset = 0.0f;
-
-                    // Find the new room's wall in the opposite direction.
-                    // Don't filter by ConnectionType — stairwell walls have CT=0.
-                    // Use the LARGEST offset wall (furthest boundary) for spacing.
-                    HouseRoomData const* newRd = sHousingMgr.GetHouseRoomData(houseRoomID);
-                    std::vector<RoomComponentData> const* newComps = newRd ? sHousingMgr.GetRoomComponents(newRd->RoomWmoDataID) : nullptr;
-
-                    // Helper: find the most extreme wall offset in a direction
-                    auto findMaxWallOffset = [&](std::vector<RoomComponentData> const* cs, int axis, bool negative) -> float
+                    if (Housing::FitRoomToDoor(rooms, houseRoomID, floorIndex, *door, candidate, ObjectGuid::Empty, gridX, gridY))
                     {
-                        float best = 0.0f;
-                        if (!cs) return best;
-                        for (auto const& nc : *cs)
-                        {
-                            if (nc.Type != 1) continue; // walls only
-                            float v = (axis == 0) ? nc.OffsetPos[0] : nc.OffsetPos[1];
-                            if (negative && v < -0.5f && v < best) best = v;
-                            if (!negative && v > 0.5f && v > best) best = v;
-                        }
-                        return best;
-                    };
-
-                    if (comp.OffsetPos[0] > 0.5f) // source door faces +X
-                    {
-                        sourceDoorOffset = comp.OffsetPos[0];
-                        newDoorOffset = findMaxWallOffset(newComps, 0, true); // -X wall
-                        newGridX = room.GridX + static_cast<int32>(sourceDoorOffset - newDoorOffset);
-                        newGridY = room.GridY;
+                        orientation = candidate;
+                        placement = HOUSING_RESULT_SUCCESS;
+                        break;
                     }
-                    else if (comp.OffsetPos[0] < -0.5f) // source door faces -X
-                    {
-                        sourceDoorOffset = comp.OffsetPos[0];
-                        newDoorOffset = findMaxWallOffset(newComps, 0, false); // +X wall
-                        newGridX = room.GridX + static_cast<int32>(sourceDoorOffset - newDoorOffset);
-                        newGridY = room.GridY;
-                    }
-                    else if (comp.OffsetPos[1] > 0.5f) // source door faces +Y
-                    {
-                        sourceDoorOffset = comp.OffsetPos[1];
-                        newDoorOffset = findMaxWallOffset(newComps, 1, true); // -Y wall
-                        newGridX = room.GridX;
-                        newGridY = room.GridY + static_cast<int32>(sourceDoorOffset - newDoorOffset);
-                    }
-                    else if (comp.OffsetPos[1] < -0.5f) // source door faces -Y
-                    {
-                        sourceDoorOffset = comp.OffsetPos[1];
-                        newDoorOffset = findMaxWallOffset(newComps, 1, false); // +Y wall
-                        newGridX = room.GridX;
-                        newGridY = room.GridY + static_cast<int32>(sourceDoorOffset - newDoorOffset);
-                    }
-
-                    // FloorIndex = floor NUMBER (0=ground, 1=floor2, ...).
-                    // Sniff-verified: the client's editor uses FloorIndex as a small
-                    // integer for its floor selector UI; world Z is computed as
-                    // FloorIndex × FLOOR_HEIGHT_Y (12 yards) during room spawn.
-                    // Stairwell room sits on the CURRENT floor; a room attached via a
-                    // stairwell's CEILING door (Z>1) goes one floor up.
-                    if (std::abs(comp.OffsetPos[2]) > 1.0f)
-                        newFloorIndex = room.FloorIndex + 1;
-                    else
-                        newFloorIndex = room.FloorIndex;
-
-                    TC_LOG_INFO("housing", "ROOM_ADD: sourceDoor={:.1f} newDoor={:.1f} doorZ={:.1f} -> gridX={} gridY={} floorZ={}",
-                        sourceDoorOffset, newDoorOffset, comp.OffsetPos[2], newGridX, newGridY, newFloorIndex);
-                    goto foundDoor;
                 }
             }
         }
-        // Fallback: stack linearly if door not found
-        newGridX = static_cast<int32>(nextSlot);
-        newGridY = 0;
-        foundDoor:;
+        else
+        {
+            // Not a wall door: a stairwell's ceiling opening - the new room goes straight up.
+            HouseRoomData const* sourceData = sHousingMgr.GetHouseRoomData(source->RoomEntryId);
+            std::vector<RoomComponentData> const* comps = sourceData ? sHousingMgr.GetRoomComponents(sourceData->RoomWmoDataID) : nullptr;
+            if (comps && std::any_of(comps->begin(), comps->end(),
+                [&](RoomComponentData const& c) { return c.ID == targetDoorComponentID && std::abs(c.OffsetPos[2]) > 1.0f; }))
+            {
+                gridX = source->GridX;
+                gridY = source->GridY;
+                floorIndex = source->FloorIndex + 1;
+                orientation = source->Orientation;
+                placement = Housing::RoomFits(rooms, houseRoomID, gridX, gridY, floorIndex, orientation)
+                    ? HOUSING_RESULT_SUCCESS : HOUSING_RESULT_ROOM_PLACEMENT_OUT_OF_BOUNDS;
+            }
+        }
+
+        TC_LOG_INFO("housing", "ROOM_ADD: source={} door={} room={} -> grid=({}, {}) floor={} orientation={} result={}",
+            sourceRoomGuid.ToString(), targetDoorComponentID, houseRoomID, gridX, gridY, floorIndex, orientation, uint32(placement));
     }
 
+    uint32 const nextSlot = housing->GetNextRoomSlotIndex();
     ObjectGuid newRoomGuid;
-    HousingResult result = housing->PlaceRoom(houseRoomID, nextSlot,
-        /*orientation*/ 0, /*mirrored*/ false, &newRoomGuid, newGridX, newGridY, newFloorIndex);
+    HousingResult result = placement == HOUSING_RESULT_SUCCESS
+        ? housing->PlaceRoom(houseRoomID, nextSlot, orientation, /*mirrored*/ false, &newRoomGuid, gridX, gridY, floorIndex)
+        : placement;
     if (outRoomGuid)
         *outRoomGuid = newRoomGuid;
 
@@ -2867,21 +2797,18 @@ HousingResult WorldSession::AddHousingRoomAtDoor(Housing* housing, uint32 target
 
     if (result == HOUSING_RESULT_SUCCESS)
     {
-        // Blizzlike: a stairwell is one physical unit split across TWO room entities
-        // at the same XY — the stairwell room at current floor + an "Empty Stairwell
-        // Room" (ID=48) 12 yards above. Each has its own geobox so decor can be
-        // placed on BOTH floors independently, and the upper room's ceiling sits
-        // at world Z=24 (2×floor height), matching sniff observations.
+        // A stairwell is two room entities stacked at one XY (12.1.0.69933 sniff): the room itself and a second
+        // instance of the same HouseRoom one floor up. The lower half drops its ceiling, the upper one its floor and
+        // stairs (HouseInteriorMap::SpawnRoomMeshObjectsFromList); their floor/ceiling doors link them. Houses made
+        // before this carry HouseRoom 48 ("Empty Stairwell Room") as the upper half, which still works.
         HouseRoomData const* addedRoom = sHousingMgr.GetHouseRoomData(houseRoomID);
         if (addedRoom && addedRoom->HasStairs())
         {
-            constexpr uint32 STAIRWELL_EMPTY_ROOM_ID = 48;
             ObjectGuid upperRoomGuid;
-            HousingResult upperRes = housing->PlaceRoom(STAIRWELL_EMPTY_ROOM_ID, nextSlot + 1,
-                /*orientation*/ 0, /*mirrored*/ false, &upperRoomGuid,
-                newGridX, newGridY, newFloorIndex + 1);
-            TC_LOG_INFO("housing", "ROOM_ADD: stairwell partner (ID={}) placed at (gridX={}, gridY={}, floor={}) result={}",
-                STAIRWELL_EMPTY_ROOM_ID, newGridX, newGridY, newFloorIndex + 1, uint32(upperRes));
+            HousingResult upperRes = housing->PlaceRoom(houseRoomID, nextSlot + 1,
+                orientation, /*mirrored*/ false, &upperRoomGuid, gridX, gridY, floorIndex + 1);
+            TC_LOG_INFO("housing", "ROOM_ADD: stairwell upper half (ID={}) placed at (gridX={}, gridY={}, floor={}) result={}",
+                houseRoomID, gridX, gridY, floorIndex + 1, uint32(upperRes));
         }
 
         if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(GetPlayer()->GetMap()))
@@ -2889,43 +2816,11 @@ HousingResult WorldSession::AddHousingRoomAtDoor(Housing* housing, uint32 target
             int32 faction = (GetPlayer()->GetTeamId() == TEAM_ALLIANCE)
                 ? NEIGHBORHOOD_FACTION_ALLIANCE : NEIGHBORHOOD_FACTION_HORDE;
 
-            // Spawn only the NEW room's entities (incremental).
-            // SpawnRoomMeshObjects skips rooms with existing MeshObjects/RoomEntities.
+            // Spawn only the NEW room(s) (SpawnRoomMeshObjects skips rooms already on the map), then open the
+            // wall it was attached to on the other side.
+            std::vector<Housing::Room const*> rooms = housing->GetRooms();
             interiorMap->SpawnRoomMeshObjects(housing, faction);
-
-            // Update the source room's wall at the connecting door:
-            // 1. Replace the Cosmetic wall MeshObject with DoorwayWall+Doorway pair
-            // 2. Update the HousingRoomEntity's door AttachedRoomGUID
-            if (!newRoomGuid.IsEmpty())
-            {
-                // Find the source room that owns the door component
-                for (auto const& [guid, rm] : housing->GetRoomsMap())
-                {
-                    if (guid == newRoomGuid) continue;
-                    HouseRoomData const* rd = sHousingMgr.GetHouseRoomData(rm.RoomEntryId);
-                    if (!rd) continue;
-                    std::vector<RoomComponentData> const* cs = sHousingMgr.GetRoomComponents(rd->RoomWmoDataID);
-                    if (!cs) continue;
-                    for (auto const& c : *cs)
-                    {
-                        if (c.ID == targetDoorComponentID)
-                        {
-                            // Replace wall with doorway — stairwell rooms connect
-                            // HORIZONTALLY through walls, same as any other room.
-                            interiorMap->ReplaceWallWithDoorway(guid, targetDoorComponentID,
-                                faction, rm, newRoomGuid);
-                            // Update door connection data
-                            for (HousingRoomEntity* re : interiorMap->GetRoomEntities())
-                            {
-                                if (re && re->IsInWorld())
-                                    re->UpdateDoorConnection(targetDoorComponentID, newRoomGuid);
-                            }
-                            goto doneUpdate;
-                        }
-                    }
-                }
-                doneUpdate:;
-            }
+            interiorMap->RefreshRoomDoors(rooms, faction);
         }
 
         WorldPackets::Housing::AccountRoomCollectionUpdate roomUpdate;
@@ -2971,53 +2866,6 @@ void WorldSession::HandleHousingRoomRemove(WorldPackets::Housing::HousingRoomRem
             roomDecorGuids.push_back(decor->Guid);
     }
 
-    // Find adjacent rooms that had their connecting wall skipped because this room existed.
-    // Those walls need to be restored after this room is removed.
-    // Rule: parent rooms (lower slotIndex) skip their wall when a child (higher slot) exists.
-    // So we look for neighbors with LOWER slotIndex — they need wall restoration.
-    struct WallRestore { ObjectGuid roomGuid; uint32 doorCompID; };
-    std::vector<WallRestore> wallsToRestore;
-    {
-        auto removedItr = housing->GetRoomsMap().find(housingRoomRemove.RoomGuid);
-        if (removedItr != housing->GetRoomsMap().end())
-        {
-            Housing::Room const& removedRoom = removedItr->second;
-            HouseRoomData const* removedRd = sHousingMgr.GetHouseRoomData(removedRoom.RoomEntryId);
-            if (removedRd)
-            {
-                // For each neighbor with lower slot, find which of THEIR door components
-                // was skipped because this room was connected
-                for (auto const& [nGuid, nRoom] : housing->GetRoomsMap())
-                {
-                    if (nGuid == housingRoomRemove.RoomGuid)
-                        continue;
-                    if (nRoom.SlotIndex >= removedRoom.SlotIndex)
-                        continue; // only restore walls on rooms with LOWER slot
-
-                    HouseRoomData const* nRd = sHousingMgr.GetHouseRoomData(nRoom.RoomEntryId);
-                    if (!nRd) continue;
-                    std::vector<RoomComponentData> const* nComps = sHousingMgr.GetRoomComponents(nRd->RoomWmoDataID);
-                    if (!nComps) continue;
-
-                    for (auto const& nc : *nComps)
-                    {
-                        if (nc.ConnectionType == 0) continue;
-                        // Check if this door faces the removed room's position
-                        float doorWorldX = nRoom.GridX + nc.OffsetPos[0];
-                        float doorWorldY = nRoom.GridY + nc.OffsetPos[1];
-                        float dx = static_cast<float>(removedRoom.GridX) - doorWorldX;
-                        float dy = static_cast<float>(removedRoom.GridY) - doorWorldY;
-                        if (std::abs(dx) < 15.0f && std::abs(dy) < 15.0f)
-                        {
-                            wallsToRestore.push_back({ nGuid, nc.ID });
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // Stairwells are stacked pairs — if removing a base stairwell, also remove
     // the partner room directly above (same XY, FloorIndex+1). Vice versa for
     // partner removal. Without this, whichever one stays behind is orphaned and
@@ -3054,12 +2902,25 @@ void WorldSession::HandleHousingRoomRemove(WorldPackets::Housing::HousingRoomRem
         for (auto const* decor : housing->GetAllPlacedDecor())
             if (decor && decor->RoomGuid == pairedRoomGuid)
                 pairedDecorGuids.push_back(decor->Guid);
-        // Remove the partner first so the main removal's graph-connectivity
-        // check doesn't flag the leftover as unreachable.
-        housing->RemoveRoom(pairedRoomGuid);
     }
 
-    HousingResult result = housing->RemoveRoom(housingRoomRemove.RoomGuid);
+    // Upper half first: it is free while the lower half stands, so its refund is 0 and the lower half's cost comes back
+    // once (Housing::GetRoomWeightCost). The connectivity check treats both halves as one either way.
+    HousingResult result;
+    Housing::Room const* mainRoom = housing->GetRoom(housingRoomRemove.RoomGuid);
+    Housing::Room const* pairedRoom = pairedRoomGuid.IsEmpty() ? nullptr : housing->GetRoom(pairedRoomGuid);
+    if (mainRoom && pairedRoom && pairedRoom->FloorIndex < mainRoom->FloorIndex)
+    {
+        result = housing->RemoveRoom(housingRoomRemove.RoomGuid);
+        if (result == HOUSING_RESULT_SUCCESS)
+            housing->RemoveRoom(pairedRoomGuid);
+    }
+    else
+    {
+        if (pairedRoom)
+            housing->RemoveRoom(pairedRoomGuid);
+        result = housing->RemoveRoom(housingRoomRemove.RoomGuid);
+    }
 
     WorldPackets::Housing::HousingRoomRemoveResponse response;
     response.Result = static_cast<uint8>(result);
@@ -3081,22 +2942,15 @@ void WorldSession::HandleHousingRoomRemove(WorldPackets::Housing::HousingRoomRem
             if (!pairedRoomGuid.IsEmpty())
                 interiorMap->DespawnRoomEntities(pairedRoomGuid);
 
-            // Restore walls on adjacent rooms that were skipped
+            // The neighbours' walls on the removed room's side close again
             int32 faction = (player->GetTeamId() == TEAM_ALLIANCE)
                 ? NEIGHBORHOOD_FACTION_ALLIANCE : NEIGHBORHOOD_FACTION_HORDE;
-            for (auto const& restore : wallsToRestore)
-            {
-                auto roomItr = housing->GetRoomsMap().find(restore.roomGuid);
-                if (roomItr == housing->GetRoomsMap().end())
-                    continue;
-                // Respawn just the wall component that was skipped
-                std::vector<uint32> compIDs = { restore.doorCompID };
-                interiorMap->RespawnRoomComponentsForTheme(restore.roomGuid, faction,
-                    roomItr->second, &compIDs, static_cast<int32>(roomItr->second.ThemeId));
+            interiorMap->RefreshRoomDoors(housing->GetRooms(), faction);
 
-                TC_LOG_INFO("housing", "ROOM_REMOVE: Restored wall compID={} on room {} (was skipped for removed room)",
-                    restore.doorCompID, restore.roomGuid.ToString());
-            }
+            // Standing in the room that went away: retail teleports the player back to the entry hall
+            // (SMSG_MOVE_TELEPORT to the interior origin in the 12.1.0.69933 layout sniff).
+            if (!interiorMap->IsInsideAnyRoom(player->GetPosition(), housing->GetRooms()))
+                player->NearTeleportTo(interiorMap->GetEntryPosition());
         }
     }
 
@@ -3131,37 +2985,8 @@ void WorldSession::HandleHousingRoomRotate(WorldPackets::Housing::HousingRoomRot
         return;
     }
 
+    // Turns the room around the door it hangs off (and its stairwell half with it).
     HousingResult result = housing->RotateRoom(housingRoomRotate.RoomGuid, housingRoomRotate.Clockwise);
-
-    // Stairwell pair: if the rotated room is part of a stairwell stack, rotate
-    // its partner too so both rooms stay aligned (same orientation, same XY).
-    ObjectGuid pairedRoomGuid;
-    if (result == HOUSING_RESULT_SUCCESS)
-    {
-        auto itr = housing->GetRoomsMap().find(housingRoomRotate.RoomGuid);
-        if (itr != housing->GetRoomsMap().end())
-        {
-            Housing::Room const& rm = itr->second;
-            HouseRoomData const* rd = sHousingMgr.GetHouseRoomData(rm.RoomEntryId);
-            if (rd && rd->HasStairs())
-            {
-                for (auto const& [gGuid, gRm] : housing->GetRoomsMap())
-                {
-                    if (gGuid == housingRoomRotate.RoomGuid) continue;
-                    if (gRm.GridX != rm.GridX || gRm.GridY != rm.GridY) continue;
-                    if (std::abs(gRm.FloorIndex - rm.FloorIndex) != 1) continue;
-                    HouseRoomData const* gRd = sHousingMgr.GetHouseRoomData(gRm.RoomEntryId);
-                    if (gRd && gRd->HasStairs())
-                    {
-                        pairedRoomGuid = gGuid;
-                        break;
-                    }
-                }
-            }
-        }
-        if (!pairedRoomGuid.IsEmpty())
-            housing->RotateRoom(pairedRoomGuid, housingRoomRotate.Clockwise);
-    }
 
     WorldPackets::Housing::HousingRoomUpdateResponse response;
     response.Result = static_cast<uint8>(result);
@@ -3170,18 +2995,19 @@ void WorldSession::HandleHousingRoomRotate(WorldPackets::Housing::HousingRoomRot
 
     if (result == HOUSING_RESULT_SUCCESS)
     {
-        // Sniff-verified (build 66838): retail UPDATE_OBJECT after rotation contains CREATE/UPDATE
-        // blocks for ALL child mesh objects (walls, floor, ceiling), not just the parent room entity.
-        // Despawn the rotated room's entities then re-spawn them with the new orientation.
+        // Retail: a VALUES update of the room's transform plus new meshes only for the door slots that changed.
         if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(player->GetMap()))
         {
-            interiorMap->DespawnRoomEntities(housingRoomRotate.RoomGuid);
-            if (!pairedRoomGuid.IsEmpty())
-                interiorMap->DespawnRoomEntities(pairedRoomGuid);
+            if (Housing::Room const* room = housing->GetRoom(housingRoomRotate.RoomGuid))
+            {
+                interiorMap->UpdateRoomPlacement(*room);
+                if (Housing::Room const* partner = housing->FindStairwellPartner(*room))
+                    interiorMap->UpdateRoomPlacement(*partner);
+            }
 
             int32 faction = (player->GetTeamId() == TEAM_ALLIANCE)
                 ? NEIGHBORHOOD_FACTION_ALLIANCE : NEIGHBORHOOD_FACTION_HORDE;
-            interiorMap->SpawnRoomMeshObjects(housing, faction);
+            interiorMap->RefreshRoomDoors(housing->GetRooms(), faction);
         }
     }
 
@@ -3258,8 +3084,25 @@ void WorldSession::HandleHousingRoomSetComponentTheme(WorldPackets::Housing::Hou
         return;
     }
 
+    // "Apply to all walls" lists every piece of the room, a slot once per mesh and the ceiling too (12.1.0.69933
+    // sniff), yet in game the ceiling keeps its own style: when walls are named, only the walls change. A floor or
+    // ceiling is restyled by a request naming just that slot.
+    std::vector<uint32> componentIds;
+    for (uint32 cid : housingRoomSetComponentTheme.OptionIDs)
+    {
+        RoomComponentEntry const* compEntry = sRoomComponentStore.LookupEntry(cid);
+        if (compEntry && (compEntry->Type == HOUSING_ROOM_COMPONENT_WALL
+            || compEntry->Type == HOUSING_ROOM_COMPONENT_DOORWAY_WALL
+            || compEntry->Type == HOUSING_ROOM_COMPONENT_DOORWAY))
+            componentIds.push_back(cid);
+    }
+    if (componentIds.empty())
+        componentIds = housingRoomSetComponentTheme.OptionIDs;
+    std::sort(componentIds.begin(), componentIds.end());
+    componentIds.erase(std::unique(componentIds.begin(), componentIds.end()), componentIds.end());
+
     HousingResult result = housing->ApplyRoomTheme(housingRoomSetComponentTheme.RoomGuid,
-        housingRoomSetComponentTheme.HouseThemeID, housingRoomSetComponentTheme.OptionIDs);
+        housingRoomSetComponentTheme.HouseThemeID, componentIds);
 
     WorldPackets::Housing::HousingRoomSetComponentThemeResponse response;
     response.Result = static_cast<uint8>(result);
@@ -3268,11 +3111,7 @@ void WorldSession::HandleHousingRoomSetComponentTheme(WorldPackets::Housing::Hou
     response.OptionIDs = housingRoomSetComponentTheme.OptionIDs;
     SendPacket(response.Write());
 
-    // Theme changes require different 3D models (FileDataIDs), so DESTROY old meshes
-    // and CREATE new ones with new GUIDs. Sniff shows walls disappearing/reappearing.
-    // Filter compIDs by type: only respawn components that match the dominant type in the
-    // request. "Apply wall style to all" sends all compIDs including floor/ceiling, but
-    // only wall components should change. We detect this by checking component types.
+    // A theme swaps the models (other FileDataIDs): retail destroys the slot's pieces and creates new ones.
     if (result == HOUSING_RESULT_SUCCESS)
     {
         if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(player->GetMap()))
@@ -3282,24 +3121,7 @@ void WorldSession::HandleHousingRoomSetComponentTheme(WorldPackets::Housing::Hou
             auto const& rooms = housing->GetRoomsMap();
             auto roomItr = rooms.find(housingRoomSetComponentTheme.RoomGuid);
             if (roomItr != rooms.end())
-            {
-                // Filter: only respawn wall-type components from the list.
-                // The client's "apply to all walls" sends ALL compIDs including
-                // floor/ceiling, but those should keep their current theme.
-                std::vector<uint32> wallOnlyCompIDs;
-                for (uint32 cid : housingRoomSetComponentTheme.OptionIDs)
-                {
-                    RoomComponentEntry const* compEntry = sRoomComponentStore.LookupEntry(cid);
-                    if (compEntry && (compEntry->Type == HOUSING_ROOM_COMPONENT_WALL
-                        || compEntry->Type == HOUSING_ROOM_COMPONENT_DOORWAY_WALL
-                        || compEntry->Type == HOUSING_ROOM_COMPONENT_DOORWAY))
-                        wallOnlyCompIDs.push_back(cid);
-                }
-
-                interiorMap->RespawnRoomComponentsForTheme(housingRoomSetComponentTheme.RoomGuid, faction,
-                    roomItr->second, wallOnlyCompIDs.empty() ? &housingRoomSetComponentTheme.OptionIDs : &wallOnlyCompIDs,
-                    housingRoomSetComponentTheme.HouseThemeID);
-            }
+                interiorMap->RebuildRoomComponents(housing->GetRooms(), roomItr->second, faction, componentIds);
         }
     }
 
@@ -3403,23 +3225,14 @@ void WorldSession::HandleHousingRoomSetDoorType(WorldPackets::Housing::HousingRo
     response.DoorType = housingRoomSetDoorType.DoorType;
     SendPacket(response.Write());
 
-    // Door type selects between door model variants via RoomCompID.
-    // Different FileDataIDs per variant, so respawn with correct model.
+    // The variant decides both sides' doorway pieces (HouseInteriorMap::SelectComponentOptions).
     if (result == HOUSING_RESULT_SUCCESS)
     {
         if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(player->GetMap()))
         {
             int32 faction = (player->GetTeamId() == TEAM_ALLIANCE)
                 ? NEIGHBORHOOD_FACTION_ALLIANCE : NEIGHBORHOOD_FACTION_HORDE;
-            auto const& rooms = housing->GetRoomsMap();
-            auto roomItr = rooms.find(housingRoomSetDoorType.RoomGuid);
-            if (roomItr != rooms.end())
-            {
-                std::vector<uint32> compIDs = { housingRoomSetDoorType.ThemeOptionID };
-                interiorMap->RespawnRoomComponentsForTheme(housingRoomSetDoorType.RoomGuid, faction,
-                    roomItr->second, &compIDs, static_cast<int32>(roomItr->second.ThemeId),
-                    -1, housingRoomSetDoorType.DoorType);
-            }
+            interiorMap->RefreshRoomDoors(housing->GetRooms(), faction);
         }
     }
 
@@ -3464,9 +3277,7 @@ void WorldSession::HandleHousingRoomSetCeilingType(WorldPackets::Housing::Housin
     response.CeilingType = housingRoomSetCeilingType.CeilingType;
     SendPacket(response.Write());
 
-    // Ceiling type selects between model variants (normal=RoomCompID 0, vaulted=RoomCompID 1).
-    // Different FileDataIDs per variant, so we must respawn with the correct model.
-    // overrideRoomCompID filters which option to spawn (only the one matching CeilingType).
+    // Ceiling type selects the model variant (RoomComponentOption.RoomComponentID: normal 0, vaulted 1, ...).
     if (result == HOUSING_RESULT_SUCCESS)
     {
         if (HouseInteriorMap* interiorMap = dynamic_cast<HouseInteriorMap*>(player->GetMap()))
@@ -3476,12 +3287,8 @@ void WorldSession::HandleHousingRoomSetCeilingType(WorldPackets::Housing::Housin
             auto const& rooms = housing->GetRoomsMap();
             auto roomItr = rooms.find(housingRoomSetCeilingType.RoomGuid);
             if (roomItr != rooms.end())
-            {
-                std::vector<uint32> compIDs = { housingRoomSetCeilingType.ThemeOptionID };
-                interiorMap->RespawnRoomComponentsForTheme(housingRoomSetCeilingType.RoomGuid, faction,
-                    roomItr->second, &compIDs, static_cast<int32>(roomItr->second.ThemeId),
-                    -1, housingRoomSetCeilingType.CeilingType);
-            }
+                interiorMap->RebuildRoomComponents(housing->GetRooms(), roomItr->second, faction,
+                    { housingRoomSetCeilingType.ThemeOptionID });
         }
     }
 
@@ -5661,7 +5468,7 @@ void WorldSession::HandleHousingBlueprintImport(WorldPackets::Housing::HousingBl
             return HOUSING_RESULT_BLUEPRINT_REQUIREMENTS_UNMET;
 
         ObjectGuid roomGuid;
-        HousingResult roomResult = AddHousingRoomAtDoor(housing, packet.TargetDoorComponentID, blueprint->Content.Rooms.front().RoomEntryId, &roomGuid);
+        HousingResult roomResult = AddHousingRoomAtDoor(housing, packet.SourceRoomGuid, packet.TargetDoorComponentID, blueprint->Content.Rooms.front().RoomEntryId, &roomGuid);
         if (roomResult != HOUSING_RESULT_SUCCESS)
             return roomResult;
 

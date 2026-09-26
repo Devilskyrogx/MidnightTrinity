@@ -503,6 +503,12 @@ void HousingMap::SpawnPlotGameObjects()
             Position customPos = housing->GetHousePosition();
             houseGo = SpawnHouseForPlot(plotIdx, &customPos, exteriorComponentID, houseExteriorWmoDataID, overridesPtr, rootOvrPtr);
         }
+        else if (!housing && plotInfo->HousePosition)
+        {
+            // Owner offline: the moved house position mirrored from character_housing
+            Position customPos = *plotInfo->HousePosition;
+            houseGo = SpawnHouseForPlot(plotIdx, &customPos, exteriorComponentID, houseExteriorWmoDataID, overridesPtr, rootOvrPtr);
+        }
         else
         {
             houseGo = SpawnHouseForPlot(plotIdx, nullptr, exteriorComponentID, houseExteriorWmoDataID, overridesPtr, rootOvrPtr);
@@ -1164,6 +1170,15 @@ bool HousingMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
                 return;
             }
 
+            // Arriving is not being on the plot: leaving the house puts the owner at the plot's TeleportPosition,
+            // which can lie outside the plot AreaTrigger. Only an owner the trigger holds counts as on the plot -
+            // otherwise nothing ever clears CurrentHouse and the housing controls stay up anywhere in the
+            // neighborhood. The trigger has had its target updates by now; when it does hold the player,
+            // at_housing_plot has already announced the plot.
+            bool onPlot = plotAt->GetInsideUnits().contains(playerGuid);
+            if (!onPlot && hMap->GetPlayerCurrentPlot(playerGuid) == static_cast<int8>(deferredPlotIndex))
+                hMap->ClearPlayerCurrentPlot(playerGuid);
+
             // Retail pattern: send VALUES update on AT (with FHousingPlotAreaTrigger_C data)
             // at the same timestamp as ENTER_PLOT, ensuring the client entity table has fresh data.
             {
@@ -1260,13 +1275,15 @@ bool HousingMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
                 // UPDATE_OBJECT bundle. Without this the AT enter event is the only path that
                 // sets it, but at login the player is already inside the AT box so OnUnitEnter
                 // doesn't trigger; the editor menu then never arms.
-                p->SetCurrentHouse(housing->GetHouseGuid());
+                if (onPlot)
+                    p->SetCurrentHouse(housing->GetHouseGuid());
 
                 // Push HouseStatus + Permissions so the client's permissions cache is populated
                 // for the player's own plot. Same reason as SetCurrentHouse above — at login
                 // OnUnitEnter doesn't fire, so the AT script's proactive push at
                 // at_housing_plot.cpp never runs and the permissions window won't open until
                 // the player walks out of the AT and back in.
+                if (onPlot)
                 {
                     WorldPackets::Housing::HousingHouseStatusResponse statusResponse;
                     statusResponse.HouseGuid = housing->GetHouseGuid();
@@ -2105,9 +2122,13 @@ GameObject* HousingMap::SpawnHouseForPlot(uint8 plotIndex, Position const* custo
             houseFacing = hRotZ;
     }
     Position housePosition(targetPlot->HousePosition[0], targetPlot->HousePosition[1], targetPlot->HousePosition[2], houseFacing);
+    // Where the owner put the house the client already chose the height: retail keeps it verbatim (12.1.0.69933 sniff,
+    // root Entity PositionLocalSpace.Z == the Z of CMSG_HOUSE_EXTERIOR_SET_HOUSE_POSITION). Snapping it to the terrain
+    // under the house centre sank houses on slopes, door and all. Only the DB2 default spot is put on the ground.
     if (customPos)
         housePosition = *customPos;
-    groundClamp(housePosition);
+    else
+        groundClamp(housePosition);
 
     // Plot room (the plot geobox the house and yard decor hang off): retail places it exactly on the plot's
     // PlotGameObjectID row of GameObjects.db2, turned half a revolution (captured plots 7 and 9 match to the
@@ -3413,6 +3434,7 @@ void HousingMap::SpawnOrMoveHouseRootEntity(uint8 plotIndex, Position const& hou
     }
 
     // An existing root just gets a VALUES update, as retail sends after CMSG_HOUSE_EXTERIOR_SET_HOUSE_POSITION.
+    root->Relocate(housePos);
     root->SetMirroredPosition(localPos, localRot, 1.0f, room->GetGUID(), /*attachFlags*/ 3);
 }
 

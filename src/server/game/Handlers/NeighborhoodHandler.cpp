@@ -20,6 +20,7 @@
 #include "HousingNeighborhoodMirrorEntity.h"
 #include "QueryPackets.h"
 #include "HousingPlayerHouseEntity.h"
+#include "HousingRoomEntity.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
 #include "Guild.h"
@@ -1679,14 +1680,40 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
         // consumed by the actual move; clear it so the lock is released early.
         neighborhood->ClearReservation(player->GetGUID());
 
+        // Retail (12.1.0.69933 sniff) carries the house over keeping its place on the plot: after the move the root
+        // Entity has the same plot-relative transform as before. Taken from the root on the old plot (it knows where
+        // the house actually stands, moved or not); the DB2 default spot of some plots lies outside the plot.
+        HousingMap* moveMap = dynamic_cast<HousingMap*>(player->GetMap());
+        Position fromFrame, toFrame;
+        bool const haveFrames = moveMap && oldPlotIndex != INVALID_PLOT_INDEX
+            && moveMap->GetPlotRoomFrame(oldPlotIndex, fromFrame) && moveMap->GetPlotRoomFrame(targetPlotIndex, toFrame);
+        Optional<Position> movedHousePos;
+        if (haveFrames)
+        {
+            if (HousingRoomEntity const* oldRoot = moveMap->GetHouseRootEntity(oldPlotIndex))
+            {
+                Position const local = HousingWorldToRoomLocal(fromFrame, oldRoot->GetPosition());
+                float const cosTo = std::cos(toFrame.GetOrientation());
+                float const sinTo = std::sin(toFrame.GetOrientation());
+                movedHousePos.emplace(
+                    toFrame.GetPositionX() + local.GetPositionX() * cosTo - local.GetPositionY() * sinTo,
+                    toFrame.GetPositionY() + local.GetPositionX() * sinTo + local.GetPositionY() * cosTo,
+                    toFrame.GetPositionZ() + local.GetPositionZ(),
+                    Position::NormalizeOrientation(toFrame.GetOrientation() + oldRoot->GetOrientation() - fromFrame.GetOrientation()));
+            }
+        }
+
         // Update Housing::_plotIndex so all subsequent responses (HouseStatus,
         // HouseInfo, SyncUpdateFields, etc.) use the correct DB2 PlotIndex.
         if (Housing* housing = player->GetHousing())
         {
             housing->SetPlotIndex(targetPlotIndex);
-            // A position chosen on the old plot means nothing on the new one; left set, every later rebuild or
-            // re-entry put the house back at the old plot's coordinates.
-            housing->ResetHousePosition();
+            // The old plot's world coordinates mean nothing on the new one: keep the plot-relative spot instead.
+            if (movedHousePos)
+                housing->SetHousePosition(movedHousePos->GetPositionX(), movedHousePos->GetPositionY(),
+                    movedHousePos->GetPositionZ(), movedHousePos->GetOrientation());
+            else
+                housing->ResetHousePosition();
             housing->SyncUpdateFields();
             // Push the Housing/3 entity (HousingPlayerHouseEntity) to the client
             // as CREATE — the regular world-map plot icon resolves via entity
@@ -1704,10 +1731,8 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
         if (HousingMap* housingMap = dynamic_cast<HousingMap*>(player->GetMap()))
         {
             // The yard decor moves with the house, keeping its place on the plot.
-            Position fromFrame, toFrame;
             if (Housing* movedHousing = player->GetHousing())
-                if (oldPlotIndex != INVALID_PLOT_INDEX && housingMap->GetPlotRoomFrame(oldPlotIndex, fromFrame)
-                    && housingMap->GetPlotRoomFrame(targetPlotIndex, toFrame))
+                if (haveFrames)
                     movedHousing->RelocateExteriorDecor(fromFrame, toFrame);
 
             if (oldPlotIndex != INVALID_PLOT_INDEX)
@@ -1723,10 +1748,13 @@ void WorldSession::HandleNeighborhoodMoveHouse(WorldPackets::Neighborhood::Neigh
             if (Housing const* h = player->GetHousing())
             {
                 auto fixtureOverrides = h->GetFixtureOverrideMap();
-                housingMap->SpawnHouseForPlot(targetPlotIndex, nullptr,
+                auto rootOverrides = h->GetRootComponentOverrides();
+                Position const housePos = h->GetHousePosition();
+                housingMap->SpawnHouseForPlot(targetPlotIndex, h->HasCustomPosition() ? &housePos : nullptr,
                     static_cast<int32>(h->GetCoreExteriorComponentID()),
                     static_cast<int32>(h->GetHouseType()),
-                    fixtureOverrides.empty() ? nullptr : &fixtureOverrides);
+                    fixtureOverrides.empty() ? nullptr : &fixtureOverrides,
+                    rootOverrides.empty() ? nullptr : &rootOverrides);
 
                 // Re-spawn the player's exterior decor at the new plot. DespawnAllDecorForPlot
                 // (called above for the old plot) only removes the in-world entities — the
