@@ -4,6 +4,7 @@
 SET @CGUID := 50000000;
 SET @OGUID := 50000000;
 SET @ATSPAWN := 50000000;
+SET @NPCTEXTID := 50000000;
 
 -- Creature spawns
 DELETE FROM `creature` WHERE `map` IN (2735, 2736) OR `guid` BETWEEN @CGUID+0 AND @CGUID+2808;
@@ -4926,6 +4927,39 @@ INSERT INTO `gameobject_template` (`entry`, `type`, `displayId`, `name`, `IconNa
 (629423, 5, 17666, 'Advert: 11.2.7 - Housing - Domesticated - Food - Pet Bowl (RPS)', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 65940),
 (648554, 10, 124218, 'Front Door', '', '', '', 1, 4296, 0, 0, 3000, 0, 0, 0, 0, 0, 0, 1234192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, '', 'go_housing_door', NULL, 69933);
 
+-- GameObjects behind HouseDecor.GameObjectID that TDB lacks (retail 12.1.0.69933 query responses).
+-- Decor whose GameObject has no template spawns as a plain mesh and cannot be used.
+DELETE FROM `gameobject_template` WHERE `entry` IN (527736, 547193, 554708, 563484, 565054, 565537, 572483, 574894, 584163, 612070);
+INSERT INTO `gameobject_template` (`entry`, `type`, `displayId`, `name`, `IconName`, `castBarCaption`, `unk1`, `size`, `Data0`, `Data1`, `Data2`, `Data3`, `Data4`, `Data5`, `Data6`, `Data7`, `Data8`, `Data9`, `Data10`, `Data11`, `Data12`, `Data13`, `Data14`, `Data15`, `Data16`, `Data17`, `Data18`, `Data19`, `Data20`, `Data21`, `Data22`, `Data23`, `Data24`, `Data25`, `Data26`, `Data27`, `Data28`, `Data29`, `Data30`, `Data31`, `Data32`, `Data33`, `Data34`, `ContentTuningId`, `RequiredLevel`, `AIName`, `ScriptName`, `StringId`, `VerifiedBuild`) VALUES
+(527736, 0, 103856, 'Прочная деревянная дверь (интерьер)', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 69933),
+(547193, 10, 106202, 'Прочный очаг', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(554708, 7, 107830, 'Прочная деревянная скамья', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(563484, 7, 46157, 'Скамья усталого тролля', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(565054, 7, 110022, 'Прелестный диван', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(565537, 7, 120841, 'Штормградская деревянная скамья', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(572483, 10, 112640, 'Клыкастый подсвечник', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(574894, 7, 113464, 'Стул с плюшевыми вставками', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(584163, 10, 114481, 'Увитое корнями окно', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(612070, 7, 116300, 'Маленький элегантный мягкий стул', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933);
+
+DELETE FROM `gameobject_template_locale` WHERE `locale` = 'ruRU' AND `entry` IN (527736, 547193, 554708, 563484, 565054, 565537, 572483, 574894, 584163, 612070);
+INSERT INTO `gameobject_template_locale` (`entry`, `locale`, `name`, `castBarCaption`, `unk1`, `VerifiedBuild`) VALUES
+(527736, 'ruRU', 'Прочная деревянная дверь (интерьер)', '', '', 69933),
+(547193, 'ruRU', 'Прочный очаг', '', '', 69933),
+(554708, 'ruRU', 'Прочная деревянная скамья', '', '', 69933),
+(563484, 'ruRU', 'Скамья усталого тролля', '', '', 69933),
+(565054, 'ruRU', 'Прелестный диван', '', '', 69933),
+(565537, 'ruRU', 'Штормградская деревянная скамья', '', '', 69933),
+(572483, 'ruRU', 'Клыкастый подсвечник', '', '', 69933),
+(574894, 'ruRU', 'Стул с плюшевыми вставками', '', '', 69933),
+(584163, 'ruRU', 'Увитое корнями окно', '', '', 69933),
+(612070, 'ruRU', 'Маленький элегантный мягкий стул', '', '', 69933);
+
+DELETE FROM `gameobject_template_addon` WHERE `entry` = 527736;
+INSERT INTO `gameobject_template_addon` (`entry`, `faction`, `flags`) VALUES
+(527736, 0, 32); -- GO_FLAG_NODESPAWN like the retail door
+
+
 -- Creature template addons
 DELETE FROM `creature_template_addon` WHERE `entry` IN (233063, 233124, 234993, 234995, 235014, 235016, 235017, 235021, 235026, 235451, 235452, 235453, 235454, 235455, 235456, 235457, 235458, 235460, 235461, 236111, 236112, 236113, 236115, 236116, 236117, 236118, 236119, 236820, 237063, 237438, 238582, 238584, 239415, 239906, 239919, 240353, 242052, 242122, 244166, 244547, 244568, 244569, 244570, 244575, 244681, 244688, 244697, 244756, 244806, 244850, 244862, 244864, 244951, 244973, 245038, 245042, 245045, 245087, 245134, 245259, 245276, 245551, 245815, 246336, 246971, 247298, 247302, 247958, 248854, 249435, 249503, 255104, 255110, 255126, 255196, 255197, 255198, 255200, 255202, 255203, 255213, 255216, 255218, 255221, 255227, 255519, 255651, 255654, 255778, 255912, 255914, 255918, 255920, 255924, 255941, 255943, 256085, 256327, 256416, 256521, 256525, 256526, 256632, 256636, 256825);
 INSERT INTO `creature_template_addon` (`entry`, `PathId`, `mount`, `MountCreatureID`, `StandState`, `AnimTier`, `VisFlags`, `SheathState`, `PvPFlags`, `emote`, `aiAnimKit`, `movementAnimKit`, `meleeAnimKit`, `visibilityDistanceType`, `auras`) VALUES
@@ -5041,41 +5075,92 @@ INSERT INTO `creature_equip_template` (`CreatureID`, `ID`, `ItemID1`, `Appearanc
 (244850, 1, 187518, 0, 0, 0, 0, 0, 0, 0, 0, 0),
 (246336, 2, 187518, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
--- Gossip
-DELETE FROM `gossip_menu` WHERE (`MenuID`, `TextID`) IN ((41365, 1));
+-- Gossip (retail 12.1.0.69933 where sniffed)
+DELETE FROM `npc_text` WHERE `ID` BETWEEN @NPCTEXTID+0 AND @NPCTEXTID+7;
+INSERT INTO `npc_text` (`ID`, `Probability0`, `Probability1`, `Probability2`, `Probability3`, `Probability4`, `Probability5`, `Probability6`, `Probability7`, `BroadcastTextId0`, `BroadcastTextId1`, `BroadcastTextId2`, `BroadcastTextId3`, `BroadcastTextId4`, `BroadcastTextId5`, `BroadcastTextId6`, `BroadcastTextId7`, `VerifiedBuild`) VALUES
+(@NPCTEXTID+0, 1, 0, 0, 0, 0, 0, 0, 0, 297053, 0, 0, 0, 0, 0, 0, 0, 69933), -- Lyssabel Dawnpetal
+(@NPCTEXTID+1, 1, 0, 0, 0, 0, 0, 0, 0, 297060, 0, 0, 0, 0, 0, 0, 0, 69933), -- Lyssabel Dawnpetal
+(@NPCTEXTID+2, 1, 0, 0, 0, 0, 0, 0, 0, 303291, 0, 0, 0, 0, 0, 0, 0, 69933), -- Lyssabel Dawnpetal
+(@NPCTEXTID+3, 1, 0, 0, 0, 0, 0, 0, 0, 25033, 0, 0, 0, 0, 0, 0, 0, 69933), -- flight masters
+(@NPCTEXTID+4, 1, 0, 0, 0, 0, 0, 0, 0, 303793, 0, 0, 0, 0, 0, 0, 0, 69933), -- Jorvan Longmoor
+(@NPCTEXTID+5, 1, 0, 0, 0, 0, 0, 0, 0, 303795, 0, 0, 0, 0, 0, 0, 0, 69933), -- Jorvan Longmoor
+(@NPCTEXTID+6, 1, 0, 0, 0, 0, 0, 0, 0, 303798, 0, 0, 0, 0, 0, 0, 0, 69933), -- Jorvan Longmoor
+(@NPCTEXTID+7, 1, 0, 0, 0, 0, 0, 0, 0, 303834, 0, 0, 0, 0, 0, 0, 0, 69933); -- Helmi Cooper
+
+DELETE FROM `gossip_menu` WHERE (`MenuID`, `TextID`) IN ((40502, @NPCTEXTID+0), (40509, @NPCTEXTID+1), (41190, @NPCTEXTID+2), (35728, @NPCTEXTID+3), (41352, @NPCTEXTID+4), (41353, @NPCTEXTID+5), (41354, @NPCTEXTID+6), (41379, @NPCTEXTID+7), (41365, 1));
 INSERT INTO `gossip_menu` (`MenuID`, `TextID`, `VerifiedBuild`) VALUES
+(40502, @NPCTEXTID+0, 69933),
+(40509, @NPCTEXTID+1, 69933),
+(41190, @NPCTEXTID+2, 69933),
+(35728, @NPCTEXTID+3, 69933),
+(41352, @NPCTEXTID+4, 69933),
+(41353, @NPCTEXTID+5, 69933),
+(41354, @NPCTEXTID+6, 69933),
+(41379, @NPCTEXTID+7, 69933),
 (41365, 1, 64797);
-DELETE FROM `gossip_menu_option` WHERE `MenuID` IN (35728, 40076, 41191, 41196, 41352, 41354, 41365, 41367, 41379, 41385);
+
+DELETE FROM `gossip_menu_option` WHERE `MenuID` IN (35728, 40076, 40502, 40509, 41190, 41191, 41196, 41352, 41353, 41354, 41365, 41367, 41379, 41385);
 INSERT INTO `gossip_menu_option` (`MenuID`, `GossipOptionID`, `OptionID`, `OptionNpc`, `OptionText`, `OptionBroadcastTextID`, `Language`, `Flags`, `ActionMenuID`, `ActionPoiID`, `GossipNpcOptionID`, `BoxCoded`, `BoxMoney`, `BoxText`, `BoxBroadcastTextID`, `SpellID`, `OverrideIconID`, `VerifiedBuild`) VALUES
-(35728, 123435, 0, 8, 'Show me where I can fly.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
+(35728, 123435, 0, 2, 'Show me where I can fly.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (40076, 136778, 0, 0, 'Who are you?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (40076, 136776, 1, 0, 'Where can I find decor?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (40076, 136775, 2, 0, 'Are you really giving away treasure?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
+(40502, 137598, 2, 0, 'I need directions.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40502, 135752, 3, 0, 'I\'d like to look at other neighborhood options.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40502, 135750, 4, 0, 'I want to found my own neighborhood.', 0, 0, 0, 40509, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40509, 135777, 1, 0, 'Tell me about charter neighborhoods.', 0, 0, 0, 41190, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40509, 135775, 2, 0, 'I\'d like to talk about something else.', 0, 0, 0, 40502, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41190, 136949, 0, 61, '<Purchase a charter.>', 0, 0, 0, 0, 0, 59978, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41190, 136948, 1, 0, 'I\'d like to talk about something else.', 0, 0, 0, 40502, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (41191, 136950, 0, 0, 'I\'m interested in founding my own neighborhood.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
 (41196, 136961, 0, 0, 'I\'d like to talk about something else.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
-(41352, 137143, 0, 0, 'I\'d like to upgrade my house.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
-(41354, 137142, 0, 0, 'I\'ll be back.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
+(41352, 137141, 0, 0, 'I\'d like to upgrade my house.', 0, 0, 0, 41353, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41352, 137143, 1, 0, 'I\'d like to upgrade my house.', 0, 0, 0, 41354, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41352, 139907, 2, 1, 'I\'d like to see the creative room blueprints.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41353, 137139, 0, 0, 'Let\'s go!', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41354, 137142, 0, 0, 'I\'ll be back.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (41365, 137155, 0, 0, 'I\'d like to upgrade my house.', 0, 0, 0, 41367, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (41367, 137154, 0, 0, 'I\'ll be back.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
-(41379, 137165, 0, 0, 'Can I use this device to make dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
-(41379, 137172, 1, 0, 'Where else can I obtain dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
-(41379, 137366, 2, 3, 'I\'d like to learn the basics of Inscription or Alchemy.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64978),
+(41379, 137165, 1, 0, 'Can I use this device to make dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41379, 137172, 2, 0, 'Where else can I obtain dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(41379, 137366, 3, 3, 'I\'d like to learn the basics of Inscription or Alchemy.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (41385, 137178, 0, 0, 'Can I use this device to make dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (41385, 137177, 1, 0, 'Where else can I obtain dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (41385, 137571, 2, 5, 'I\'d like to learn the basics of Inscription or Alchemy.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797);
-DELETE FROM `creature_template_gossip` WHERE (`CreatureID`, `MenuID`) IN ((236111, 35728), (236112, 35728), (236113, 35728), (236115, 35728), (236116, 35728), (236117, 35728), (236118, 35728), (236119, 35728), (248854, 40076), (255104, 41352), (255126, 41379));
+
+DELETE FROM `gossip_menu_option_locale` WHERE `Locale` = 'ruRU' AND `MenuID` IN (35728, 40502, 40509, 41190, 41352, 41353, 41354, 41379);
+INSERT INTO `gossip_menu_option_locale` (`MenuID`, `OptionID`, `Locale`, `OptionText`, `BoxText`) VALUES
+(35728, 0, 'ruRU', 'Покажи, куда я могу отправиться.', NULL),
+(40502, 2, 'ruRU', 'Мне нужно узнать, как кое-куда пройти.', NULL),
+(40502, 3, 'ruRU', 'Я хочу рассмотреть другие варианты районов.', NULL),
+(40502, 4, 'ruRU', 'Я хочу основать свой район.', NULL),
+(40509, 1, 'ruRU', 'Расскажи мне о реестровых районах.', NULL),
+(40509, 2, 'ruRU', 'Я хочу обсудить кое-что другое.', NULL),
+(41190, 0, 'ruRU', '<Приобрести реестр.>', NULL),
+(41190, 1, 'ruRU', 'Я хочу обсудить кое-что другое.', NULL),
+(41352, 0, 'ruRU', 'Я хочу улучшить свой дом.', NULL),
+(41352, 1, 'ruRU', 'Я хочу улучшить свой дом.', NULL),
+(41352, 2, 'ruRU', 'Я хочу посмотреть чертежи творческих комнат.', NULL),
+(41353, 0, 'ruRU', 'Поехали!', NULL),
+(41354, 0, 'ruRU', 'Я еще вернусь.', NULL),
+(41379, 1, 'ruRU', 'Я могу воспользоваться этой станцией для изготовления красителей?', NULL),
+(41379, 2, 'ruRU', 'Где еще можно достать красители?', NULL),
+(41379, 3, 'ruRU', 'Мне хотелось бы обучиться основам начертания или алхимии.', NULL);
+
+DELETE FROM `creature_template_gossip` WHERE (`CreatureID`, `MenuID`) IN ((233063, 40502), (236111, 35728), (236112, 35728), (236113, 35728), (236115, 35728), (236116, 35728), (236117, 35728), (236118, 35728), (236119, 35728), (248854, 40076), (255104, 41352), (255126, 41379));
 INSERT INTO `creature_template_gossip` (`CreatureID`, `MenuID`, `VerifiedBuild`) VALUES
+(233063, 40502, 69933),
 (236111, 35728, 0),
-(236112, 35728, 0),
+(236112, 35728, 69933),
 (236113, 35728, 0),
 (236115, 35728, 0),
-(236116, 35728, 0),
+(236116, 35728, 69933),
 (236117, 35728, 0),
 (236118, 35728, 0),
 (236119, 35728, 0),
 (248854, 40076, 0),
-(255104, 41352, 0),
-(255126, 41379, 0);
+(255104, 41352, 69933),
+(255126, 41379, 69933);
 
 -- Vendors
 DELETE FROM `npc_vendor` WHERE `entry` IN (244681, 255203, 255213, 255216, 255218, 255519);
@@ -5336,11 +5421,12 @@ INSERT INTO `spell_target_position` (`ID`, `EffectIndex`, `OrderIndex`, `MapID`,
 (1258484, 0, 0, 2736, 2053.6, 175.468, 175.12, 0, 57388);
 
 -- Spell scripts
-DELETE FROM `spell_script_names` WHERE `ScriptName` IN ('spell_housing_leave_house', 'spell_housing_plot_teleport');
+DELETE FROM `spell_script_names` WHERE `ScriptName` IN ('spell_housing_leave_house', 'spell_housing_plot_teleport', 'spell_housing_neighborhood_charter');
 INSERT INTO `spell_script_names` (`spell_id`, `ScriptName`) VALUES
 (1234193, 'spell_housing_leave_house'),
 (1233637, 'spell_housing_plot_teleport'),
-(1265142, 'spell_housing_plot_teleport');
+(1265142, 'spell_housing_plot_teleport'),
+(1225512, 'spell_housing_neighborhood_charter');
 
 -- TDB has these NPCs without faction, NPC and unit flags: retail 12.1.0.69933 values where sniffed, older sniffs otherwise
 UPDATE `creature_template` SET `faction` = 35, `npcflag` = 8193, `BaseAttackTime` = 2000, `unit_flags2` = 2048 WHERE `entry` = 227878;
@@ -5496,4 +5582,5 @@ UPDATE `creature_template` SET `faction` = 35, `npcflag` = 128, `BaseAttackTime`
 UPDATE `creature_template` SET `faction` = 35, `unit_flags` = 33536, `unit_flags2` = 67667968, `unit_flags3` = 1090551808 WHERE `entry` = 256825;
 UPDATE `creature_template` SET `faction` = 35, `speed_run` = 1, `BaseAttackTime` = 2000, `unit_flags` = 33555200, `unit_flags2` = 67110912, `unit_flags3` = 1090551808 WHERE `entry` = 257229;
 UPDATE `creature_template` SET `ScriptName` = 'npc_housing_steward' WHERE `entry` IN (233063, 233708);
+UPDATE `creature_template` SET `ScriptName` = 'npc_housing_house_upgrade' WHERE `entry` = 255104;
 

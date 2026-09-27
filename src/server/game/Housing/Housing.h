@@ -24,6 +24,7 @@
 #include "ObjectGuid.h"
 #include "Optional.h"
 #include "Position.h"
+#include "QuaternionData.h"
 #include <array>
 #include <atomic>
 #include <map>
@@ -45,6 +46,16 @@ inline Position HousingWorldToRoomLocal(Position const& roomWorldPos, Position c
     float cosF = std::cos(roomWorldPos.GetOrientation());
     float sinF = std::sin(roomWorldPos.GetOrientation());
     return Position(cosF * dx + sinF * dy, -sinF * dx + cosF * dy, worldPos.GetPositionZ() - roomWorldPos.GetPositionZ());
+}
+
+// Rotation counterpart of HousingWorldToRoomLocal: the client composes worldRot = roomRot ⊗ localRot, so a
+// world-frame quaternion written as RotationLocalSpace comes out rotated by the room's facing. Room parents are
+// yaw-only, and pre-multiplying by an inverse yaw equals subtracting it from the ZYX euler yaw.
+inline QuaternionData HousingWorldRotationToRoomLocal(float roomWorldYaw, QuaternionData const& worldRot)
+{
+    float z, y, x;
+    worldRot.toEulerAnglesZYX(z, y, x);
+    return QuaternionData::fromEulerAnglesZYX(z - roomWorldYaw, y, x);
 }
 
 class TC_GAME_API Housing
@@ -115,7 +126,10 @@ public:
         std::string SourceValue;
     };
 
-    explicit Housing(Player* owner);
+    // owner: the player the house is loaded on (packets, money, criteria). ownerGuid: the character that bought
+    // the house and keys its rows (retail CosmeticOwner) - another character of the same account on retail
+    // 12.1.0.69933 houses, which belong to the Battle.net account. Defaults to the player.
+    explicit Housing(Player* owner, ObjectGuid ownerGuid = ObjectGuid::Empty);
 
     // Global DB ID generators — must be called once during server startup
     // before any Housing objects are loaded, to prevent cross-player ID collisions.
@@ -131,6 +145,8 @@ public:
 
     // Getters
     Player* GetOwner() const { return _owner; }
+    // Character that bought the house (row key, retail CosmeticOwner).
+    ObjectGuid GetOwnerGuid() const { return _ownerGuid; }
     ObjectGuid GetHouseGuid() const { return _houseGuid; }
     ObjectGuid GetNeighborhoodGuid() const { return _neighborhoodGuid; }
     void SetNeighborhoodGuid(ObjectGuid guid) { _neighborhoodGuid = guid; }
@@ -201,7 +217,8 @@ public:
     // Interior decor must end up inside one of the house's rooms (RoomWmoData bounding box). The client lets a
     // player push an item through a wall with collision disabled; without this it was saved outside every room.
     HousingResult CheckInteriorDecorBounds(ObjectGuid roomGuid, float x, float y, float z) const;
-    HousingResult CommitDecorDyes(ObjectGuid decorGuid, std::array<uint32, MAX_HOUSING_DYE_SLOTS> const& dyeSlots);
+    // consumeDyes: take one DyeColor.ItemID per newly dyed slot (player dyeing; blueprint imports pass false).
+    HousingResult CommitDecorDyes(ObjectGuid decorGuid, std::array<uint32, MAX_HOUSING_DYE_SLOTS> const& dyeSlots, bool consumeDyes = true);
     HousingResult SetDecorLocked(ObjectGuid decorGuid, bool locked);
     // Bind (or, with an empty petGuid, clear) a battle pet on a placed decor slot.
     HousingResult SetDecorPet(ObjectGuid decorGuid, ObjectGuid petGuid, uint8 petFlag);
@@ -285,6 +302,9 @@ public:
     HousingResult SelectFixtureOption(uint32 fixturePointId, uint32 optionId, std::vector<uint32>* removedHookIDs = nullptr);
     // Re-keys the fixtures on oldCompId's hooks to the equivalent hooks (same fixture type and rank) of newCompId.
     void MoveHookFixtures(uint32 oldCompId, uint32 newCompId);
+    // Re-resolves Base/Roof root fixtures stored at the old size to the same style at newSize
+    // (hook fixtures follow their root). Call after _houseSize changes.
+    void RemapFixturesForHouseSize(uint8 newSize);
     HousingResult RemoveFixture(uint32 componentID, uint32* outHookID = nullptr);
     std::vector<Fixture const*> GetFixtures() const;
     std::unordered_map<uint32, uint32> GetFixtureOverrideMap() const;
@@ -314,8 +334,10 @@ public:
     uint32 GetMaxFixtureBudget() const;
     void RecalculateBudgets();
 
-    // Level progression (QuestID-based)
-    void OnQuestCompleted(uint32 questId);
+    // Rewards of HouseLevelData levels fromLevel..toLevel not granted yet (award quest RewardSpell).
+    void GrantLevelAwards(uint32 fromLevel, uint32 toLevel);
+    // SMSG_HOUSING_SVCS_UPDATE_HOUSES_LEVEL_FAVOR for this house; -1 = unchanged (retail 12.1.0.69933).
+    void SendLevelFavorUpdate(int32 level, int32 favor) const;
 
     // UpdateField synchronization
     void SyncUpdateFields();
@@ -362,7 +384,10 @@ public:
     // Populate ALL decor entries (placed + catalog) into the Account entity's FHousingStorage_C.
     // Called on-demand by REQUEST_STORAGE handler. Retail does NOT populate storage at login —
     // FHousingStorage_C is only sent when the player enters edit mode or requests storage.
+    // Fills the account's FHousingStorage_C with the decor of every house of the account (retail 12.1.0.69933
+    // storage holds decor of both houses).
     void PopulateCatalogStorageEntries();
+    void PopulateOwnStorageEntries();
 
 private:
     uint64 GenerateDecorDbId();
@@ -397,6 +422,7 @@ private:
         bool isExterior, ObjectGuid excludeGuid = ObjectGuid::Empty) const;
 
     Player* _owner;
+    ObjectGuid _ownerGuid;
     ObjectGuid _houseGuid;
     ObjectGuid _neighborhoodGuid;
     uint8 _plotIndex;

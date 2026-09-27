@@ -19,6 +19,8 @@
 #include "Creature.h"
 #include "CreatureAI.h"
 #include "GossipDef.h"
+#include "Housing.h"
+#include "HousingMgr.h"
 #include "Log.h"
 #include "Player.h"
 #include "ScriptedGossip.h"
@@ -56,39 +58,91 @@ struct npc_housing_steward : public CreatureAI
         TC_LOG_DEBUG("housing", "npc_housing_steward: Player {} greeted steward {} (kill credit {}, talkto {})",
             player->GetGUID().ToString(), me->GetEntry(), NPC_KILL_CREDIT_GREET_STEWARD, me->GetEntry());
 
-        // Only show the custom "Ask the steward to join" gossip when the player is on
-        // "My First Home" (91863) and hasn't yet asked the steward (kill credit 248857).
-        // For all other interactions (including quest 94210 "Feathering the Nest" turn-in),
-        // return false to let the default QuestGiver / gossip pathway proceed.
-        if (player->GetQuestStatus(QUEST_MY_FIRST_HOME) == QUEST_STATUS_INCOMPLETE)
-        {
-            InitGossipMenuFor(player, 0);
-            if (me->IsQuestGiver())
-                player->PrepareQuestMenu(me->GetGUID());
-            AddGossipItemFor(player, GossipOptionNpc::None,
-                "Ask the steward to become your neighbor.",
-                GOSSIP_SENDER_MAIN, GOSSIP_ACTION_ASK_TO_JOIN);
-            SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, me->GetGUID());
-            return true;
-        }
+        // During "My First Home" (91863) the steward's own menu (world DB, e.g. 40502 with the
+        // neighborhood founding chain) gets the extra "Ask the steward to join" option.
+        // Otherwise the default QuestGiver / gossip pathway runs.
+        if (player->GetQuestStatus(QUEST_MY_FIRST_HOME) != QUEST_STATUS_INCOMPLETE)
+            return false;
 
-        return false;
+        player->PrepareGossipMenu(me, me->GetGossipMenuId(), true);
+        AddGossipItemFor(player, GossipOptionNpc::None,
+            "Ask the steward to become your neighbor.",
+            GOSSIP_SENDER_MAIN, GOSSIP_ACTION_ASK_TO_JOIN);
+        player->SendPreparedGossip(me);
+        return true;
     }
 
     bool OnGossipSelect(Player* player, uint32 /*menuId*/, uint32 gossipListId) override
     {
-        uint32 action = GetGossipActionFor(player, gossipListId);
+        // Options from the world DB menu (founding chain, directions, ...) follow the default path.
+        if (GetGossipActionFor(player, gossipListId) != GOSSIP_ACTION_ASK_TO_JOIN)
+            return false;
+
         CloseGossipMenuFor(player);
 
-        if (action == GOSSIP_ACTION_ASK_TO_JOIN)
-        {
-            // Grant "Ask the steward to join you" kill credit (quest objective 3)
-            player->KilledMonsterCredit(NPC_KILL_CREDIT_ASK_STEWARD);
+        // Grant "Ask the steward to join you" kill credit (quest objective 3)
+        player->KilledMonsterCredit(NPC_KILL_CREDIT_ASK_STEWARD);
 
-            TC_LOG_DEBUG("housing", "npc_housing_steward: Player {} asked steward {} to join (kill credit {})",
-                player->GetGUID().ToString(), me->GetEntry(), NPC_KILL_CREDIT_ASK_STEWARD);
-        }
+        TC_LOG_DEBUG("housing", "npc_housing_steward: Player {} asked steward {} to join (kill credit {})",
+            player->GetGUID().ToString(), me->GetEntry(), NPC_KILL_CREDIT_ASK_STEWARD);
+        return true;
+    }
+};
 
+enum HousingHouseUpgrade
+{
+    // Jorvan Longmoor (255104), Founder's Point
+    GOSSIP_MENU_HOUSE_UPGRADE           = 41352,
+    GOSSIP_OPTION_UPGRADE_READY         = 0,        // 137141 -> 41353
+    GOSSIP_OPTION_UPGRADE_NOT_READY     = 1,        // 137143 -> 41354
+    GOSSIP_OPTION_CREATIVE_BLUEPRINTS   = 2,        // 139907, vendor
+    GOSSIP_MENU_HOUSE_UPGRADE_CONFIRM   = 41353,    // "Let's go!"
+
+    // [DNT] Level Up Houses - Cover: force-casts 1252051 (SPELL_EFFECT_GIVE_HOUSE_LEVEL) + kill credit 257414
+    SPELL_LEVEL_UP_HOUSES_COVER         = 1264549
+};
+
+// Jorvan Longmoor (255104) — raises the house level (retail 12.1.0.69933, sniff 11-13-10).
+// Menu 41352 shows one of two "I'd like to upgrade my house." options: 137141 when the house has the
+// favor for the next level (-> 41353 "Let's go!", which casts 1264549), 137143 otherwise (-> 41354).
+struct npc_housing_house_upgrade : public CreatureAI
+{
+    npc_housing_house_upgrade(Creature* creature) : CreatureAI(creature) { }
+
+    void UpdateAI(uint32 /*diff*/) override { }
+
+    static bool CanUpgrade(Player* player)
+    {
+        Housing const* housing = player->GetHousing();
+        if (!housing || housing->GetLevel() >= MAX_HOUSE_LEVEL)
+            return false;
+
+        return housing->GetFavor() >= sHousingMgr.GetFavorThresholdForLevel(housing->GetLevel() + 1);
+    }
+
+    bool OnGossipHello(Player* player) override
+    {
+        InitGossipMenuFor(player, GOSSIP_MENU_HOUSE_UPGRADE);
+        if (me->IsQuestGiver())
+            player->PrepareQuestMenu(me->GetGUID());
+
+        if (player->GetHousing())
+            AddGossipItemFor(player, GOSSIP_MENU_HOUSE_UPGRADE,
+                CanUpgrade(player) ? GOSSIP_OPTION_UPGRADE_READY : GOSSIP_OPTION_UPGRADE_NOT_READY, GOSSIP_SENDER_MAIN, 0);
+        AddGossipItemFor(player, GOSSIP_MENU_HOUSE_UPGRADE, GOSSIP_OPTION_CREATIVE_BLUEPRINTS, GOSSIP_SENDER_MAIN, 0);
+
+        SendGossipMenuFor(player, player->GetGossipTextId(GOSSIP_MENU_HOUSE_UPGRADE, me), me->GetGUID());
+        return true;
+    }
+
+    bool OnGossipSelect(Player* player, uint32 menuId, uint32 /*gossipListId*/) override
+    {
+        if (menuId != GOSSIP_MENU_HOUSE_UPGRADE_CONFIRM)
+            return false;
+
+        CloseGossipMenuFor(player);
+        if (CanUpgrade(player))
+            player->CastSpell(player, SPELL_LEVEL_UP_HOUSES_COVER, true);
         return true;
     }
 };
@@ -96,4 +150,5 @@ struct npc_housing_steward : public CreatureAI
 void AddSC_npc_housing_steward()
 {
     RegisterCreatureAI(npc_housing_steward);
+    RegisterCreatureAI(npc_housing_house_upgrade);
 }

@@ -101,10 +101,8 @@ namespace
         return result;
     }
 
-    // Recurring event that sends housing WorldState counters every ~300ms.
-    // Sniff-verified: 5 continuous counters throughout the entire housing map session.
-    // Counters 1-3 (13436/13437/13438) increment by ~1333 each tick.
-    // Counters 4-5 (16035/16711) increment by ~7233 each tick.
+    // Recurring event that sends the housing WorldState counters 13436/13437/13438 every ~5 s,
+    // +1333 per tick (12.1.0.69933 sniff 11-13-10).
     class HousingWorldStateCounterEvent : public BasicEvent
     {
     public:
@@ -125,8 +123,7 @@ namespace
             player->SendUpdateWorldState(WORLDSTATE_HOUSING_COUNTER_1, _counter1);
             player->SendUpdateWorldState(WORLDSTATE_HOUSING_COUNTER_2, _counter2);
             player->SendUpdateWorldState(WORLDSTATE_HOUSING_COUNTER_3, _counter3);
-            player->SendUpdateWorldState(WORLDSTATE_HOUSING_COUNTER_4, _counter4);
-            player->SendUpdateWorldState(WORLDSTATE_HOUSING_COUNTER_5, _counter5);
+            // 16035/16711 are not sent by 12.1.0.69933 retail (sniff 11-13-10).
 
             // Increment for next tick (different rates per sniff)
             _counter1 += HOUSING_WORLDSTATE_INCREMENT;
@@ -959,7 +956,8 @@ bool HousingMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
         TC_LOG_DEBUG("housing", "HousingMap::AddPlayerToMap: Player {} has housing: plotIndex={} houseType={} houseGuid={}",
             player->GetGUID().ToString(), housing->GetPlotIndex(), housing->GetHouseType(), housing->GetHouseGuid().ToString());
 
-        AddPlayerHousing(player->GetGUID(), housing);
+        // Keyed by the buying character: plots carry that GUID, and another character of the account may be here.
+        AddPlayerHousing(housing->GetOwnerGuid(), housing);
 
         // Ensure the neighborhood PlotInfo has the HouseGuid (may be missing after server restart
         // since LoadFromDB only populates it if character_housing row exists)
@@ -1499,8 +1497,10 @@ bool HousingMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
 
 void HousingMap::RemovePlayerFromMap(Player* player, bool remove)
 {
-    // Remove plot auras before removing housing data.
-    if (Housing const* housing = GetHousingForPlayer(player->GetGUID()))
+    // Remove plot auras before removing housing data. The house is registered under its buyer, which may be
+    // another character of the leaving player's account.
+    Housing const* leavingHousing = _neighborhood ? player->GetHousingForNeighborhood(_neighborhood->GetGuid()) : nullptr;
+    if (Housing const* housing = leavingHousing ? GetHousingForPlayer(leavingHousing->GetOwnerGuid()) : nullptr)
     {
         // Remove all plot enter/presence auras (manual packets — spells not in DB2)
         SendPlotLeaveAuraRemoval(player);
@@ -1513,7 +1513,8 @@ void HousingMap::RemovePlayerFromMap(Player* player, bool remove)
     // go_housing_door fallback on a later visit.
     ClearPlayerCurrentPlot(player->GetGUID());
 
-    RemovePlayerHousing(player->GetGUID());
+    if (leavingHousing)
+        RemovePlayerHousing(leavingHousing->GetOwnerGuid());
 
     TC_LOG_DEBUG("housing", "HousingMap::RemovePlayerFromMap: Player {} leaving housing map {} instanceId {}",
         player->GetGUID().ToString(), GetId(), GetInstanceId());
@@ -2641,21 +2642,27 @@ void HousingMap::SpawnFullHouseMeshObjects(uint8 plotIndex, Position const& hous
                 // 1. Check player's root overrides for this type. A type without one falls through to the
                 // core component / DB2 default: skipping it dropped the roof (and every other root) whenever
                 // the stored selections did not cover all types, e.g. right after a style or type change.
+                // An override pointing at a different-size component (stale row the size remap could not
+                // resolve) is ignored, or the whole rebuild locks to the old size.
                 if (rootOverrides)
                 {
                     auto ovrItr = rootOverrides->find(type);
                     if (ovrItr != rootOverrides->end())
-                        selectedCompID = ovrItr->second;
+                    {
+                        ExteriorComponentEntry const* ovrComp = sExteriorComponentStore.LookupEntry(ovrItr->second);
+                        if (ovrComp && ovrComp->Size == houseSize)
+                            selectedCompID = ovrItr->second;
+                    }
                 }
 
                 // 2. For the core type, use the player's selected coreExtCompID
                 if (!selectedCompID && type == coreComp->Type)
                     selectedCompID = coreExtCompID;
 
-                // 3. Fall back to DB2 default for this type + wmoDataID
+                // 3. Fall back to DB2 default for this type + wmoDataID at the house's size
                 if (!selectedCompID)
                 {
-                    uint32 defaultID = sHousingMgr.GetDefaultFixtureForType(type, wmoDataID);
+                    uint32 defaultID = sHousingMgr.GetDefaultFixtureForType(type, wmoDataID, houseSize);
                     if (defaultID)
                         selectedCompID = defaultID;
                 }
@@ -3197,6 +3204,64 @@ void HousingMap::SendPlotMeshObjectsToPlayers(uint8 plotIndex)
     }
 }
 
+void HousingMap::SendPlotGeometryEntitiesToPlayer(uint8 plotIndex, Player* player)
+{
+    if (!player || !player->IsInWorld())
+        return;
+
+    // The client validates decor placement and house moves against the plot geometry entities:
+    // the room identity (Housing/2) is the attach-chain root, the room component MeshObject carries
+    // the Geobox ("cannot place outside plot" check), the exterior root Entity is the draggable
+    // house anchor and the Group B mirrors carry the visible pieces. Ordinary grid visibility does
+    // NOT deliver any of them — the login bundle does, which is why everything worked after a relog
+    // but not after a mid-session plot purchase. Values-update what the client already holds,
+    // CREATE the rest (a duplicate CREATE for a held GUID crashes the client).
+    UpdateData updateData(GetId());
+    uint32 created = 0, updated = 0;
+
+    auto pushEntity = [&](BaseEntity* entity)
+    {
+        if (!entity)
+            return;
+        // NOTE: no IsInWorld check — Group B mirrors are deliberately never map-added and only
+        // reach the client through hand-built bundles (login, this helper).
+        if (player->HaveAtClient(entity))
+        {
+            entity->BuildValuesUpdateBlockForPlayer(&updateData, player);
+            ++updated;
+        }
+        else
+        {
+            entity->BuildCreateUpdateBlockForPlayer(&updateData, player);
+            player->m_clientGUIDs.insert(entity->GetGUID());
+            ++created;
+        }
+    };
+
+    if (HousingRoomEntity* room = GetRoomIdentityEntity(plotIndex))
+        pushEntity(room);
+
+    if (auto meshItr = _roomComponentMeshes.find(plotIndex); meshItr != _roomComponentMeshes.end())
+        if (MeshObject* geobox = GetMeshObject(meshItr->second))
+            pushEntity(geobox);
+
+    if (HousingRoomEntity* root = GetHouseRootEntity(plotIndex))
+        pushEntity(root);
+
+    for (HousingMirrorEntity* mirror : GetHouseMeshMirrors(plotIndex))
+        pushEntity(mirror);
+
+    if (!updateData.HasData())
+        return;
+
+    WorldPacket packet;
+    updateData.BuildPacket(&packet);
+    player->SendDirectMessage(&packet);
+
+    TC_LOG_INFO("housing", "HousingMap::SendPlotGeometryEntitiesToPlayer: plot {} -> player {} ({} CREATE, {} values update)",
+        plotIndex, player->GetGUID().ToString(), created, updated);
+}
+
 void HousingMap::DespawnAllMeshObjectsForPlot(uint8 plotIndex)
 {
     auto itr = _meshObjects.find(plotIndex);
@@ -3576,6 +3641,9 @@ bool HousingMap::SpawnDecorItem(uint8 plotIndex, Housing::PlacedDecor const& dec
     // World → room-local (inverse room rotation). Matches MeshObject decor path.
     Position worldPos(worldX, worldY, worldZ);
     Position localPos = roomEntityGuid.IsEmpty() ? worldPos : HousingWorldToRoomLocal(roomWorldPos, worldPos);
+    // The client composes worldRot = roomRot ⊗ localRot, so the mirrored rotation must be in the room frame
+    // too — writing the world quaternion left every exterior decor rotated by the plot facing.
+    QuaternionData const localRot = roomEntityGuid.IsEmpty() ? rot : HousingWorldRotationToRoomLocal(roomWorldPos.GetOrientation(), rot);
     float decorScale = decor.Scale > 0.01f ? decor.Scale : 1.0f;
     uint8 attachFlags = roomEntityGuid.IsEmpty() ? uint8(0) : uint8(3);
 
@@ -3617,7 +3685,8 @@ bool HousingMap::SpawnDecorItem(uint8 plotIndex, Housing::PlacedDecor const& dec
                 // Order matches the sniff-verified fragment list.
                 go->InitHousingDecorData(decor.Guid, houseGuid, decor.Locked ? 1 : 0,
                     roomEntityGuid, decor.SourceType, decor.SourceValue);
-                go->InitHousingDecorMirroredPosition(localPos, rot, decorScale, roomEntityGuid, attachFlags);
+                go->SetHousingDecorDyeSlots(decor.DyeSlots);
+                go->InitHousingDecorMirroredPosition(localPos, localRot, decorScale, roomEntityGuid, attachFlags);
 
                 if (!AddToMap(go))
                 {
@@ -3676,7 +3745,7 @@ bool HousingMap::SpawnDecorItem(uint8 plotIndex, Housing::PlacedDecor const& dec
         return false;
     }
 
-    MeshObject* mesh = MeshObject::CreateMeshObject(this, localPos, rot, decorScale,
+    MeshObject* mesh = MeshObject::CreateMeshObject(this, localPos, localRot, decorScale,
         fileDataID, /*isWMO*/ decorData->ModelType == HOUSE_DECOR_MODEL_TYPE_WMO, roomEntityGuid, attachFlags, &worldPos);
 
     if (!mesh)
@@ -3688,6 +3757,7 @@ bool HousingMap::SpawnDecorItem(uint8 plotIndex, Housing::PlacedDecor const& dec
 
     PhasingHandler::InitDbPhaseShift(mesh->GetPhaseShift(), PHASE_USE_FLAGS_ALWAYS_VISIBLE, 0, 0);
     mesh->InitHousingDecorData(decor.Guid, houseGuid, decor.Locked ? 1 : 0, roomEntityGuid, decor.SourceType, decor.SourceValue);
+    mesh->SetHousingDecorDyeSlots(decor.DyeSlots);
 
     if (!AddToMap(mesh))
     {
@@ -3808,6 +3878,21 @@ void HousingMap::SpawnAllDecorForPlot(uint8 plotIndex, Housing const* housing)
         _neighborhood ? _neighborhood->GetName() : "?");
 }
 
+void HousingMap::UpdateDecorDyes(ObjectGuid decorGuid, std::array<uint32, MAX_HOUSING_DYE_SLOTS> const& dyeSlots)
+{
+    auto itr = _decorGuidToGoGuid.find(decorGuid);
+    if (itr == _decorGuidToGoGuid.end())
+        return;
+
+    if (itr->second.IsGameObject())
+    {
+        if (GameObject* go = GetGameObject(itr->second))
+            go->SetHousingDecorDyeSlots(dyeSlots);
+    }
+    else if (MeshObject* mesh = GetMeshObject(itr->second))
+        mesh->SetHousingDecorDyeSlots(dyeSlots);
+}
+
 void HousingMap::UpdateDecorPosition(uint8 plotIndex, ObjectGuid decorGuid, Position const& pos, QuaternionData const& rot, float scale /*= 1.0f*/)
 {
     auto itr = _decorGuidToGoGuid.find(decorGuid);
@@ -3819,6 +3904,7 @@ void HousingMap::UpdateDecorPosition(uint8 plotIndex, ObjectGuid decorGuid, Posi
     // Decor attaches to the plot's room identity entity, the same one SpawnDecorItem measures from.
     HousingRoomEntity* roomId = GetRoomIdentityEntity(plotIndex);
     Position localPos = roomId ? HousingWorldToRoomLocal(roomId->GetPosition(), pos) : pos;
+    QuaternionData const localRot = roomId ? HousingWorldRotationToRoomLocal(roomId->GetOrientation(), rot) : rot;
 
     ObjectGuid objGuid = itr->second;
     if (objGuid.IsGameObject())
@@ -3829,7 +3915,7 @@ void HousingMap::UpdateDecorPosition(uint8 plotIndex, ObjectGuid decorGuid, Posi
             go->SetLocalRotation(rot.x, rot.y, rot.z, rot.w);
             if (std::abs(go->GetObjectScale() - scale) > 0.001f)
                 go->SetObjectScale(scale);
-            go->UpdateHousingDecorMirroredTransform(localPos, rot, scale);
+            go->UpdateHousingDecorMirroredTransform(localPos, localRot, scale);
             TC_LOG_DEBUG("housing", "HousingMap::UpdateDecorPosition: Moved decor GameObject {} to ({:.1f}, {:.1f}, {:.1f}) scale={:.2f} for plot {}",
                 decorGuid.ToString(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), scale, plotIndex);
         }
@@ -3837,7 +3923,7 @@ void HousingMap::UpdateDecorPosition(uint8 plotIndex, ObjectGuid decorGuid, Posi
     else if (MeshObject* mesh = GetMeshObject(objGuid))
     {
         mesh->Relocate(pos);
-        mesh->UpdateLocalTransform(localPos, rot, scale);
+        mesh->UpdateLocalTransform(localPos, localRot, scale);
         TC_LOG_DEBUG("housing", "HousingMap::UpdateDecorPosition: Moved decor MeshObject {} to ({:.1f}, {:.1f}, {:.1f}) scale={:.2f} for plot {}",
             decorGuid.ToString(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), scale, plotIndex);
     }
