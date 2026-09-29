@@ -4060,7 +4060,7 @@ INSERT INTO `gameobject_template` (`entry`, `type`, `displayId`, `name`, `IconNa
 (527311, 48, 110660, 'Cornerstone - Plot 13 (Horde)', 'buy', '', '', 1, 4, 0, 1, 0, 10, 0, 0, 70, 1266097, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 65617),
 (527313, 48, 110660, 'Cornerstone - Plot 34 (Horde)', 'buy', '', '', 1, 4, 0, 1, 0, 10, 0, 0, 70, 1266097, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 65617),
 (527314, 48, 110660, 'Cornerstone - Plot 22 (Horde)', 'buy', '', '', 1, 4, 0, 1, 0, 10, 0, 0, 70, 1266097, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 65617),
-(527890, 10, 103913, 'Tusked Fireplace', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(527890, 10, 103913, 'Tusked Fireplace', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
 (529653, 5, 15466, 'Wood Pile', 'axe', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
 (531766, 22, 66649, 'Portal to Orgrimmar', '', '', '', 2, 1235764, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 65940),
 (531941, 7, 107678, 'Stool', '', '', '', 1, 1, 1, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
@@ -4929,20 +4929,25 @@ INSERT INTO `gameobject_template` (`entry`, `type`, `displayId`, `name`, `IconNa
 
 -- GameObjects behind HouseDecor.GameObjectID that TDB lacks (retail 12.1.0.69933 query responses).
 -- Decor whose GameObject has no template spawns as a plain mesh and cannot be used.
-DELETE FROM `gameobject_template` WHERE `entry` IN (527736, 547193, 554708, 563484, 565054, 565537, 572483, 574894, 584163, 612070);
+-- Decor doors without a retail sniff (VerifiedBuild 0): type and flags as 527736, displayId is the GameObjectDisplayInfo of HouseDecor.ModelFileDataID
+DELETE FROM `gameobject_template` WHERE `entry` IN (527736, 547193, 547194, 554708, 558397, 560338, 563484, 565054, 565537, 572483, 574894, 584163, 612070, 619004);
 INSERT INTO `gameobject_template` (`entry`, `type`, `displayId`, `name`, `IconName`, `castBarCaption`, `unk1`, `size`, `Data0`, `Data1`, `Data2`, `Data3`, `Data4`, `Data5`, `Data6`, `Data7`, `Data8`, `Data9`, `Data10`, `Data11`, `Data12`, `Data13`, `Data14`, `Data15`, `Data16`, `Data17`, `Data18`, `Data19`, `Data20`, `Data21`, `Data22`, `Data23`, `Data24`, `Data25`, `Data26`, `Data27`, `Data28`, `Data29`, `Data30`, `Data31`, `Data32`, `Data33`, `Data34`, `ContentTuningId`, `RequiredLevel`, `AIName`, `ScriptName`, `StringId`, `VerifiedBuild`) VALUES
 (527736, 0, 103856, 'Прочная деревянная дверь (интерьер)', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 69933),
-(547193, 10, 106202, 'Прочный очаг', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(547193, 10, 106202, 'Прочный очаг', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
 (554708, 7, 107830, 'Прочная деревянная скамья', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
 (563484, 7, 46157, 'Скамья усталого тролля', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
 (565054, 7, 110022, 'Прелестный диван', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
 (565537, 7, 120841, 'Штормградская деревянная скамья', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
-(572483, 10, 112640, 'Клыкастый подсвечник', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(572483, 10, 112640, 'Клыкастый подсвечник', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
 (574894, 7, 113464, 'Стул с плюшевыми вставками', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
 (584163, 10, 114481, 'Увитое корнями окно', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, '', '', NULL, 69933),
-(612070, 7, 116300, 'Маленький элегантный мягкий стул', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933);
+(612070, 7, 116300, 'Маленький элегантный мягкий стул', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(547194, 0, 106203, 'Iron-Reinforced Door', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 0),
+(558397, 0, 109422, 'Elegant Carved Door', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 0),
+(560338, 0, 10442, 'Iron Dragonmaw Gate', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 0),
+(619004, 0, 8308, 'Dalaran Sewer Gate', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 0);
 
-DELETE FROM `gameobject_template_locale` WHERE `locale` = 'ruRU' AND `entry` IN (527736, 547193, 554708, 563484, 565054, 565537, 572483, 574894, 584163, 612070);
+DELETE FROM `gameobject_template_locale` WHERE `locale` = 'ruRU' AND `entry` IN (527736, 547193, 547194, 554708, 558397, 560338, 563484, 565054, 565537, 572483, 574894, 584163, 612070, 619004);
 INSERT INTO `gameobject_template_locale` (`entry`, `locale`, `name`, `castBarCaption`, `unk1`, `VerifiedBuild`) VALUES
 (527736, 'ruRU', 'Прочная деревянная дверь (интерьер)', '', '', 69933),
 (547193, 'ruRU', 'Прочный очаг', '', '', 69933),
@@ -4953,11 +4958,77 @@ INSERT INTO `gameobject_template_locale` (`entry`, `locale`, `name`, `castBarCap
 (572483, 'ruRU', 'Клыкастый подсвечник', '', '', 69933),
 (574894, 'ruRU', 'Стул с плюшевыми вставками', '', '', 69933),
 (584163, 'ruRU', 'Увитое корнями окно', '', '', 69933),
-(612070, 'ruRU', 'Маленький элегантный мягкий стул', '', '', 69933);
+(612070, 'ruRU', 'Маленький элегантный мягкий стул', '', '', 69933),
+(547194, 'ruRU', 'Укрепленная железом дверь', '', '', 0),
+(558397, 'ruRU', 'Элегантная резная дверь', '', '', 0),
+(560338, 'ruRU', 'Железные ворота Драконьей Пасти', '', '', 0),
+(619004, 'ruRU', 'Ворота из стоков Даларана', '', '', 0);
 
-DELETE FROM `gameobject_template_addon` WHERE `entry` = 527736;
+DELETE FROM `gameobject_template_addon` WHERE `entry` IN (527736, 547194, 558397, 560338, 619004);
 INSERT INTO `gameobject_template_addon` (`entry`, `faction`, `flags`) VALUES
-(527736, 0, 32); -- GO_FLAG_NODESPAWN like the retail door
+(527736, 0, 32), -- GO_FLAG_NODESPAWN like the retail door
+(547194, 0, 32),
+(558397, 0, 32),
+(560338, 0, 32),
+(619004, 0, 32);
+
+-- Decor GameObjects the client can use (retail 12.1.0.69933 query responses, sniff 14-43-07). Lights and fireplaces
+-- toggle State 1 <-> 0 on every use and stay that way (go_housing_decor_toggle); the bookcase wall behaves as a decor door.
+DELETE FROM `gameobject_template` WHERE `entry` IN (527693, 527892, 527893, 535963, 554835, 566777, 567418, 567758, 570876, 570990, 576308, 602757, 612071, 527886, 549363, 570438, 571613, 578092, 621771, 625765, 629139, 670659);
+INSERT INTO `gameobject_template` (`entry`, `type`, `displayId`, `name`, `IconName`, `castBarCaption`, `unk1`, `size`, `Data0`, `Data1`, `Data2`, `Data3`, `Data4`, `Data5`, `Data6`, `Data7`, `Data8`, `Data9`, `Data10`, `Data11`, `Data12`, `Data13`, `Data14`, `Data15`, `Data16`, `Data17`, `Data18`, `Data19`, `Data20`, `Data21`, `Data22`, `Data23`, `Data24`, `Data25`, `Data26`, `Data27`, `Data28`, `Data29`, `Data30`, `Data31`, `Data32`, `Data33`, `Data34`, `ContentTuningId`, `RequiredLevel`, `AIName`, `ScriptName`, `StringId`, `VerifiedBuild`) VALUES
+(527693, 10, 103841, 'Напольная лампа из кованого железа', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
+(527892, 10, 103914, 'Люстра из кованого железа на три свечи', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
+(527893, 10, 103915, 'Люстра из кованого железа', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
+(535963, 0, 104925, 'Стена с потайным книжным шкафом', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_door', NULL, 69933),
+(554835, 7, 107870, 'Широкий очаровательный диван', '', '', '', 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(566777, 7, 110444, 'Грубый деревянный стул', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(567418, 7, 110680, 'Элегантный мягкий пуф', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(567758, 10, 110920, 'Деревянный подсвечник', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 69933),
+(570876, 7, 112221, 'Элегантный мягкий диван', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(570990, 7, 112264, 'Элегантный мягкий стул', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(576308, 7, 88777, 'Резной трон земельников', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(602757, 7, 115646, 'Элегантное мягкое кресло', '', '', '', 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+(612071, 7, 116301, 'Величественная эльфийская скамья', '', '', '', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', '', NULL, 69933),
+-- Lights and fireplaces without a retail sniff (VerifiedBuild 0): Goober like the sniffed ones, displayId is the
+-- GameObjectDisplayInfo of HouseDecor.ModelFileDataID
+(527886, 10, 103912, 'Ornate Stonework Fireplace', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(549363, 10, 107268, 'Tidesage\'s Fireplace', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(570438, 10, 26309, 'Tirisgarde Candle', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(571613, 10, 112423, 'Spring Blossom Ceiling Light', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(578092, 10, 113971, 'Lush Garden Butterfly Sconce', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(621771, 10, 120256, 'Spring Blossom Lantern', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(625765, 10, 120748, 'Purified Folk Candle', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(629139, 10, 121864, 'Sin\'dorei Tiffin-Style Lamp', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0),
+(670659, 10, 128838, 'Color-Curious Candle', '', '', '', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '', 'go_housing_decor_toggle', NULL, 0);
+
+DELETE FROM `gameobject_template_locale` WHERE `locale` = 'ruRU' AND `entry` IN (527693, 527892, 527893, 535963, 554835, 566777, 567418, 567758, 570876, 570990, 576308, 602757, 612071, 527886, 549363, 570438, 571613, 578092, 621771, 625765, 629139, 670659);
+INSERT INTO `gameobject_template_locale` (`entry`, `locale`, `name`, `castBarCaption`, `unk1`, `VerifiedBuild`) VALUES
+(527693, 'ruRU', 'Напольная лампа из кованого железа', '', '', 69933),
+(527892, 'ruRU', 'Люстра из кованого железа на три свечи', '', '', 69933),
+(527893, 'ruRU', 'Люстра из кованого железа', '', '', 69933),
+(535963, 'ruRU', 'Стена с потайным книжным шкафом', '', '', 69933),
+(554835, 'ruRU', 'Широкий очаровательный диван', '', '', 69933),
+(566777, 'ruRU', 'Грубый деревянный стул', '', '', 69933),
+(567418, 'ruRU', 'Элегантный мягкий пуф', '', '', 69933),
+(567758, 'ruRU', 'Деревянный подсвечник', '', '', 69933),
+(570876, 'ruRU', 'Элегантный мягкий диван', '', '', 69933),
+(570990, 'ruRU', 'Элегантный мягкий стул', '', '', 69933),
+(576308, 'ruRU', 'Резной трон земельников', '', '', 69933),
+(602757, 'ruRU', 'Элегантное мягкое кресло', '', '', 69933),
+(612071, 'ruRU', 'Величественная эльфийская скамья', '', '', 69933),
+(527886, 'ruRU', 'Украшенный каменный очаг', '', '', 0),
+(549363, 'ruRU', 'Очаг жреца моря', '', '', 0),
+(570438, 'ruRU', 'Свеча Стражей Тирисфаля', '', '', 0),
+(571613, 'ruRU', 'Люстра весенних цветов', '', '', 0),
+(578092, 'ruRU', 'Светильник с бабочками роскошного сада', '', '', 0),
+(621771, 'ruRU', 'Фонарь весенних цветов', '', '', 0),
+(625765, 'ruRU', 'Очищенная народная свеча', '', '', 0),
+(629139, 'ruRU', 'Синдорайская лампа в стиле Тиффин', '', '', 0),
+(670659, 'ruRU', 'Свеча необычного цвета', '', '', 0);
+
+DELETE FROM `gameobject_template_addon` WHERE `entry` = 535963;
+INSERT INTO `gameobject_template_addon` (`entry`, `faction`, `flags`) VALUES
+(535963, 0, 32); -- GO_FLAG_NODESPAWN like the retail bookcase wall
 
 
 -- Creature template addons
@@ -5076,7 +5147,7 @@ INSERT INTO `creature_equip_template` (`CreatureID`, `ID`, `ItemID1`, `Appearanc
 (246336, 2, 187518, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
 -- Gossip (retail 12.1.0.69933 where sniffed)
-DELETE FROM `npc_text` WHERE `ID` BETWEEN @NPCTEXTID+0 AND @NPCTEXTID+7;
+DELETE FROM `npc_text` WHERE `ID` BETWEEN @NPCTEXTID+0 AND @NPCTEXTID+8;
 INSERT INTO `npc_text` (`ID`, `Probability0`, `Probability1`, `Probability2`, `Probability3`, `Probability4`, `Probability5`, `Probability6`, `Probability7`, `BroadcastTextId0`, `BroadcastTextId1`, `BroadcastTextId2`, `BroadcastTextId3`, `BroadcastTextId4`, `BroadcastTextId5`, `BroadcastTextId6`, `BroadcastTextId7`, `VerifiedBuild`) VALUES
 (@NPCTEXTID+0, 1, 0, 0, 0, 0, 0, 0, 0, 297053, 0, 0, 0, 0, 0, 0, 0, 69933), -- Lyssabel Dawnpetal
 (@NPCTEXTID+1, 1, 0, 0, 0, 0, 0, 0, 0, 297060, 0, 0, 0, 0, 0, 0, 0, 69933), -- Lyssabel Dawnpetal
@@ -5085,11 +5156,13 @@ INSERT INTO `npc_text` (`ID`, `Probability0`, `Probability1`, `Probability2`, `P
 (@NPCTEXTID+4, 1, 0, 0, 0, 0, 0, 0, 0, 303793, 0, 0, 0, 0, 0, 0, 0, 69933), -- Jorvan Longmoor
 (@NPCTEXTID+5, 1, 0, 0, 0, 0, 0, 0, 0, 303795, 0, 0, 0, 0, 0, 0, 0, 69933), -- Jorvan Longmoor
 (@NPCTEXTID+6, 1, 0, 0, 0, 0, 0, 0, 0, 303798, 0, 0, 0, 0, 0, 0, 0, 69933), -- Jorvan Longmoor
-(@NPCTEXTID+7, 1, 0, 0, 0, 0, 0, 0, 0, 303834, 0, 0, 0, 0, 0, 0, 0, 69933); -- Helmi Cooper
+(@NPCTEXTID+7, 1, 0, 0, 0, 0, 0, 0, 0, 303834, 0, 0, 0, 0, 0, 0, 0, 69933), -- Helmi Cooper
+(@NPCTEXTID+8, 1, 0, 0, 0, 0, 0, 0, 0, 297057, 0, 0, 0, 0, 0, 0, 0, 69933); -- Lyssabel Dawnpetal
 
-DELETE FROM `gossip_menu` WHERE (`MenuID`, `TextID`) IN ((40502, @NPCTEXTID+0), (40509, @NPCTEXTID+1), (41190, @NPCTEXTID+2), (35728, @NPCTEXTID+3), (41352, @NPCTEXTID+4), (41353, @NPCTEXTID+5), (41354, @NPCTEXTID+6), (41379, @NPCTEXTID+7), (41365, 1));
+DELETE FROM `gossip_menu` WHERE (`MenuID`, `TextID`) IN ((40502, @NPCTEXTID+0), (40508, @NPCTEXTID+8), (40509, @NPCTEXTID+1), (41190, @NPCTEXTID+2), (35728, @NPCTEXTID+3), (41352, @NPCTEXTID+4), (41353, @NPCTEXTID+5), (41354, @NPCTEXTID+6), (41379, @NPCTEXTID+7), (41365, 1));
 INSERT INTO `gossip_menu` (`MenuID`, `TextID`, `VerifiedBuild`) VALUES
 (40502, @NPCTEXTID+0, 69933),
+(40508, @NPCTEXTID+8, 69933),
 (40509, @NPCTEXTID+1, 69933),
 (41190, @NPCTEXTID+2, 69933),
 (35728, @NPCTEXTID+3, 69933),
@@ -5099,15 +5172,24 @@ INSERT INTO `gossip_menu` (`MenuID`, `TextID`, `VerifiedBuild`) VALUES
 (41379, @NPCTEXTID+7, 69933),
 (41365, 1, 64797);
 
-DELETE FROM `gossip_menu_option` WHERE `MenuID` IN (35728, 40076, 40502, 40509, 41190, 41191, 41196, 41352, 41353, 41354, 41365, 41367, 41379, 41385);
+DELETE FROM `gossip_menu_option` WHERE `MenuID` IN (35728, 40076, 40502, 40508, 40509, 41190, 41191, 41196, 41352, 41353, 41354, 41365, 41367, 41379, 41385);
 INSERT INTO `gossip_menu_option` (`MenuID`, `GossipOptionID`, `OptionID`, `OptionNpc`, `OptionText`, `OptionBroadcastTextID`, `Language`, `Flags`, `ActionMenuID`, `ActionPoiID`, `GossipNpcOptionID`, `BoxCoded`, `BoxMoney`, `BoxText`, `BoxBroadcastTextID`, `SpellID`, `OverrideIconID`, `VerifiedBuild`) VALUES
 (35728, 123435, 0, 2, 'Show me where I can fly.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (40076, 136778, 0, 0, 'Who are you?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (40076, 136776, 1, 0, 'Where can I find decor?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (40076, 136775, 2, 0, 'Are you really giving away treasure?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
+-- OptionID 1 (OptionNpc 63 HousingOpenCharterConfirmation) is hidden in every retail sniff: no retail charter was filled, so
+-- GossipOptionID and text are custom; GossipNpcOptionID 59992 is a GossipNPCOption row of type 63 (opens interaction 77)
+(40502, 135751, 1, 63, 'I\'m ready to found my neighborhood.', 0, 0, 0, 0, 0, 59992, 0, 0, NULL, 0, NULL, NULL, 0),
 (40502, 137598, 2, 0, 'I need directions.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
-(40502, 135752, 3, 0, 'I\'d like to look at other neighborhood options.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40502, 135752, 3, 0, 'I\'d like to look at other neighborhood options.', 0, 0, 0, 40508, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40508, 135774, 0, 65, '<Open the house finder.>', 0, 0, 0, 0, 0, 59711, 0, 0, NULL, 0, NULL, NULL, 69933),
+(40508, 135773, 1, 0, 'I\'d like to talk about something else.', 0, 0, 0, 40502, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (40502, 135750, 4, 0, 'I want to found my own neighborhood.', 0, 0, 0, 40509, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
+-- OptionID 0 is hidden in every retail sniff (no guild on the sniffed characters): PlayerCondition 138075 (ModifierTree
+-- 391025 "player is in a guild") is the only guild gate in the housing trees. GossipOptionID 135776 sits between the
+-- retail 135775/135777 of this menu; the text is custom. GossipNPCOption 59977 (type 60) pairs with the charter's 59978.
+(40509, 135776, 0, 60, 'I\'d like to found a guild neighborhood.', 0, 0, 0, 0, 0, 59977, 0, 0, NULL, 0, NULL, NULL, 0),
 (40509, 135777, 1, 0, 'Tell me about charter neighborhoods.', 0, 0, 0, 41190, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (40509, 135775, 2, 0, 'I\'d like to talk about something else.', 0, 0, 0, 40502, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 69933),
 (41190, 136949, 0, 61, '<Purchase a charter.>', 0, 0, 0, 0, 0, 59978, 0, 0, NULL, 0, NULL, NULL, 69933),
@@ -5128,12 +5210,16 @@ INSERT INTO `gossip_menu_option` (`MenuID`, `GossipOptionID`, `OptionID`, `Optio
 (41385, 137177, 1, 0, 'Where else can I obtain dyes?', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797),
 (41385, 137571, 2, 5, 'I\'d like to learn the basics of Inscription or Alchemy.', 0, 0, 0, 0, 0, NULL, 0, 0, NULL, 0, NULL, NULL, 64797);
 
-DELETE FROM `gossip_menu_option_locale` WHERE `Locale` = 'ruRU' AND `MenuID` IN (35728, 40502, 40509, 41190, 41352, 41353, 41354, 41379);
+DELETE FROM `gossip_menu_option_locale` WHERE `Locale` = 'ruRU' AND `MenuID` IN (35728, 40502, 40508, 40509, 41190, 41352, 41353, 41354, 41379);
 INSERT INTO `gossip_menu_option_locale` (`MenuID`, `OptionID`, `Locale`, `OptionText`, `BoxText`) VALUES
 (35728, 0, 'ruRU', 'Покажи, куда я могу отправиться.', NULL),
+(40502, 1, 'ruRU', 'Я готов основать свой район.', NULL),
 (40502, 2, 'ruRU', 'Мне нужно узнать, как кое-куда пройти.', NULL),
 (40502, 3, 'ruRU', 'Я хочу рассмотреть другие варианты районов.', NULL),
 (40502, 4, 'ruRU', 'Я хочу основать свой район.', NULL),
+(40508, 0, 'ruRU', '<Открыть поиск жилья.>', NULL),
+(40508, 1, 'ruRU', 'Я хочу обсудить кое-что другое.', NULL),
+(40509, 0, 'ruRU', 'Я хочу основать район гильдии.', NULL),
 (40509, 1, 'ruRU', 'Расскажи мне о реестровых районах.', NULL),
 (40509, 2, 'ruRU', 'Я хочу обсудить кое-что другое.', NULL),
 (41190, 0, 'ruRU', '<Приобрести реестр.>', NULL),
@@ -5146,6 +5232,12 @@ INSERT INTO `gossip_menu_option_locale` (`MenuID`, `OptionID`, `Locale`, `Option
 (41379, 1, 'ruRU', 'Я могу воспользоваться этой станцией для изготовления красителей?', NULL),
 (41379, 2, 'ruRU', 'Где еще можно достать красители?', NULL),
 (41379, 3, 'ruRU', 'Мне хотелось бы обучиться основам начертания или алхимии.', NULL);
+
+-- The charter founding option needs the Neighborhood Charter item (retail PlayerCondition trees 420508/432428 check it too)
+DELETE FROM `conditions` WHERE `SourceTypeOrReferenceId` = 15 AND ((`SourceGroup` = 40502 AND `SourceEntry` = 1) OR (`SourceGroup` = 40509 AND `SourceEntry` = 0));
+INSERT INTO `conditions` (`SourceTypeOrReferenceId`, `SourceGroup`, `SourceEntry`, `SourceId`, `ElseGroup`, `ConditionTypeOrReference`, `ConditionTarget`, `ConditionValue1`, `ConditionValue2`, `ConditionValue3`, `ConditionStringValue1`, `NegativeCondition`, `ErrorType`, `ErrorTextId`, `ScriptName`, `Comment`) VALUES
+(15, 40502, 1, 0, 0, 2, 0, 239098, 1, 0, '', 0, 0, 0, '', 'Lyssabel Dawnpetal - found neighborhood option requires Neighborhood Charter'),
+(15, 40509, 0, 0, 0, 56, 0, 138075, 0, 0, '', 0, 0, 0, '', 'Lyssabel Dawnpetal - guild neighborhood option requires a guild (PlayerCondition 138075)');
 
 DELETE FROM `creature_template_gossip` WHERE (`CreatureID`, `MenuID`) IN ((233063, 40502), (236111, 35728), (236112, 35728), (236113, 35728), (236115, 35728), (236116, 35728), (236117, 35728), (236118, 35728), (236119, 35728), (248854, 40076), (255104, 41352), (255126, 41379));
 INSERT INTO `creature_template_gossip` (`CreatureID`, `MenuID`, `VerifiedBuild`) VALUES
@@ -5368,6 +5460,19 @@ INSERT INTO `quest_template_addon` (`ID`, `MaxLevel`, `AllowableClasses`, `Sourc
 (91969, 0, 0, 0, 91968, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ''),
 (93057, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '');
 
+-- House level award quests (HouseLevelData.QuestID): the house upgrade UI shows the rewards of levels without
+-- HouseLevelRewardInfo rows from these lists (retail 12.1.0.69933 SMSG_QUERY_QUEST_INFO_RESPONSE)
+DELETE FROM `quest_reward_house_room` WHERE `QuestID` IN (93901, 93902, 94431, 94437);
+INSERT INTO `quest_reward_house_room` (`QuestID`, `OrderIndex`, `HouseRoomID`, `VerifiedBuild`) VALUES
+(93901, 0, 11, 69933),
+(93902, 0, 15, 69933),
+(94431, 0, 223, 69933),
+(94437, 0, 12, 69933),
+(94437, 1, 233, 69933);
+DELETE FROM `quest_reward_house_decor` WHERE `QuestID` = 95043;
+INSERT INTO `quest_reward_house_decor` (`QuestID`, `OrderIndex`, `HouseDecorID`, `VerifiedBuild`) VALUES
+(95043, 0, 14583, 69933);
+
 -- AreaTriggers: plot trigger 37358 and the tour stops of quest 91863
 DELETE FROM `areatrigger_template` WHERE (`Id`, `IsCustom`) IN ((37358, 0), (38951, 1), (38952, 1), (38953, 1), (38954, 1), (38955, 1), (38956, 1), (38957, 1), (38958, 1), (38959, 1), (38960, 1), (38961, 1), (38962, 1), (39001, 1), (39002, 1), (39003, 1), (39004, 1), (39005, 1), (39006, 1));
 INSERT INTO `areatrigger_template` (`Id`, `IsCustom`, `Flags`, `ActionSetId`, `ActionSetFlags`, `VerifiedBuild`) VALUES
@@ -5416,7 +5521,7 @@ INSERT INTO `areatrigger_create_properties` (`Id`, `IsCustom`, `AreaTriggerId`, 
 DELETE FROM `spell_target_position` WHERE `ID` IN (1235590, 1235595, 1258476, 1258484);
 INSERT INTO `spell_target_position` (`ID`, `EffectIndex`, `OrderIndex`, `MapID`, `PositionX`, `PositionY`, `PositionZ`, `Orientation`, `VerifiedBuild`) VALUES
 (1235590, 0, 0, 2736, 2053.6, 175.468, 175.12, 0, 57388),
-(1235595, 0, 0, 2735, 3807.76, -160.427, 194.111, 0, 57388),
+(1235595, 0, 0, 2735, 3774.97, -151.89, 191.22, 2.725157, 69933),
 (1258476, 0, 0, 2735, 3807.76, -160.427, 194.111, 0, 57388),
 (1258484, 0, 0, 2736, 2053.6, 175.468, 175.12, 0, 57388);
 
