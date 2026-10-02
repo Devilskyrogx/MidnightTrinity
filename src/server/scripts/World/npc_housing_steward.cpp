@@ -15,7 +15,6 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "ScriptMgr.h"
 #include "Creature.h"
 #include "CreatureAI.h"
 #include "GossipDef.h"
@@ -23,6 +22,7 @@
 #include "HousingMgr.h"
 #include "Log.h"
 #include "Player.h"
+#include "ScriptMgr.h"
 #include "ScriptedGossip.h"
 
 enum HousingTutorialData
@@ -38,9 +38,7 @@ enum HousingTutorialData
     GOSSIP_ACTION_ASK_TO_JOIN       = 1001,
 };
 
-// Lyssabel Dawnpetal (233063) / Tocho (233708) — Housing tutorial steward NPCs.
-// When the player interacts with the steward during the "My First Home" quest (91863),
-// the gossip grants quest kill credits for greeting the steward and asking them to join.
+// Housing tutorial steward NPCs; gossip grants the "My First Home" (91863) kill credits.
 struct npc_housing_steward : public CreatureAI
 {
     npc_housing_steward(Creature* creature) : CreatureAI(creature) { }
@@ -49,10 +47,7 @@ struct npc_housing_steward : public CreatureAI
 
     bool OnGossipHello(Player* player) override
     {
-        // Grant "Greet the steward" kill credit (quest objective 0: MONSTER 249851)
         player->KilledMonsterCredit(NPC_KILL_CREDIT_GREET_STEWARD);
-
-        // Satisfy "Talk to Lyssabel/Tocho" objective (quest objective 1/2: TALKTO with NPC entry)
         player->TalkedToCreature(me->GetEntry(), me->GetGUID());
 
         TC_LOG_DEBUG("housing", "npc_housing_steward: Player {} greeted steward {} (kill credit {}, talkto {})",
@@ -80,7 +75,6 @@ struct npc_housing_steward : public CreatureAI
 
         CloseGossipMenuFor(player);
 
-        // Grant "Ask the steward to join you" kill credit (quest objective 3)
         player->KilledMonsterCredit(NPC_KILL_CREDIT_ASK_STEWARD);
 
         TC_LOG_DEBUG("housing", "npc_housing_steward: Player {} asked steward {} to join (kill credit {})",
@@ -98,13 +92,11 @@ enum HousingHouseUpgrade
     GOSSIP_OPTION_CREATIVE_BLUEPRINTS   = 2,        // 139907, vendor
     GOSSIP_MENU_HOUSE_UPGRADE_CONFIRM   = 41353,    // "Let's go!"
 
-    // [DNT] Level Up Houses - Cover: force-casts 1252051 (SPELL_EFFECT_GIVE_HOUSE_LEVEL) + kill credit 257414
+    // [DNT] Level Up Houses - Cover: casts 1252051 (SPELL_EFFECT_GIVE_HOUSE_LEVEL) + kill credit 257414
     SPELL_LEVEL_UP_HOUSES_COVER         = 1264549
 };
 
-// Jorvan Longmoor (255104) — raises the house level (retail 12.1.0.69933, sniff 11-13-10).
-// Menu 41352 shows one of two "I'd like to upgrade my house." options: 137141 when the house has the
-// favor for the next level (-> 41353 "Let's go!", which casts 1264549), 137143 otherwise (-> 41354).
+// Jorvan Longmoor (255104): raises the house level; the confirm menu casts 1264549.
 struct npc_housing_house_upgrade : public CreatureAI
 {
     npc_housing_house_upgrade(Creature* creature) : CreatureAI(creature) { }
