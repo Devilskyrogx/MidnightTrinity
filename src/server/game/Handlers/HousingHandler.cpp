@@ -898,7 +898,6 @@ void WorldSession::HandleHousingDecorSetEditMode(WorldPackets::Housing::HousingD
     }
 }
 
-
 // A stacked-decor parent: the client sends the decor it placed the item on as the attach parent.
 static ObjectGuid DecorStackParentFrom(ObjectGuid attachParentGuid)
 {

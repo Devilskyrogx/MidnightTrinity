@@ -3276,7 +3276,6 @@ HousingResult Housing::CheckInteriorDecorBounds(ObjectGuid roomGuid, float x, fl
     return anyBounds ? HOUSING_RESULT_BOUNDS_FAILURE_ROOM : HOUSING_RESULT_SUCCESS;
 }
 
-
 ObjectGuid Housing::FindRoomGuidAtPosition(float x, float y, float z) const
 {
     NeighborhoodMapData const* interior = sHousingMgr.GetNeighborhoodMapDataForWorldMap(HOUSE_INTERIOR_MAP_ID);

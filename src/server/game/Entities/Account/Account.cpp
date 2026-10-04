@@ -45,7 +45,6 @@ void Account::ClearUpdateMask(bool remove)
     BaseEntity::ClearUpdateMask(remove);
 }
 
-
 std::string Account::GetNameForLocaleIdx(LocaleConstant /*locale*/) const
 {
     return m_name;

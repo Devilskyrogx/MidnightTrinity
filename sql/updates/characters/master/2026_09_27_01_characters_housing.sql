@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS `character_housing_decor` (
   PRIMARY KEY (`ownerGuid`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Tables created before the decor parent link existed
+SET @sql := IF((SELECT COUNT(*) FROM `information_schema`.`COLUMNS` WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'character_housing_decor' AND `COLUMN_NAME` = 'parentDecorGuid') = 0,
+    'ALTER TABLE `character_housing_decor` ADD COLUMN `parentDecorGuid` bigint unsigned NOT NULL DEFAULT ''0'' COMMENT ''Counter of the decor this item is stacked on (0 = none)'' AFTER `petFlag`',
+    'DO 0');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS `character_housing_fixtures` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT 'Unique fixture assignment ID',
   `ownerGuid` bigint unsigned NOT NULL COMMENT 'FK to character_housing.guid',
