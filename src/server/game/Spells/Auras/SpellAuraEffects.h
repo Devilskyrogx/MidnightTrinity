@@ -181,6 +181,8 @@ class TC_GAME_API AuraEffect
         void HandleAuraFeatherFall(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraHover(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleWaterBreathing(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModWaterBreathing(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleForceBreathBar(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleForceMoveForward(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraCanTurnWhileFalling(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModAdvFlying(AuraApplication const* aurApp, uint8 mode, bool apply) const;
@@ -210,12 +212,15 @@ class TC_GAME_API AuraEffect
         void HandleAuraControlVehicle(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         //  modify speed
         void HandleAuraModIncreaseSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleAuraModIncreaseBackwardSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraModIncreaseMountedSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraModIncreaseFlightSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraModIncreaseSwimSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleAuraModIncreaseUncontrolled(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraModDecreaseSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleAuraModUseNormalSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleAuraModMinimumSpeedRate(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleAuraSpeedLimitMax(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleAuraSpeedLimitMin(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleAuraSetSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModMovementForceMagnitude(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleAuraModAdvFlyingSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         //  immunity
@@ -278,11 +283,19 @@ class TC_GAME_API AuraEffect
         void HandleAuraModCritPct(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         //   attack speed
         void HandleModCastingSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleModMeleeRangedSpeedPct(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleModCombatSpeedPct(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeHaste(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModRangedHaste(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeRangedHaste(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeRangedCastingHaste(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeSlowNoStack(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModRangedSlowNoStack(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModSpellSlowNoStack(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModCastingSlowNoStack(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeRangedCastingSlowNoStack(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeHasteNoRegen(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModRangedHasteNoRegen(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleModMeleeRangedHasteNoRegen(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModAttackSpeed(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleModMeleeSpeedPct(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleAuraModRangedHaste(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         //   combat rating
         void HandleModRating(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModRatingPct(AuraApplication const* aurApp, uint8 mode, bool apply) const;
@@ -344,7 +357,6 @@ class TC_GAME_API AuraEffect
         void HandleCosmeticMounted(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModRequiredMountCapabilityFlags(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleSuppressItemPassiveEffectBySpellLabel(AuraApplication const* aurApp, uint8 mode, bool apply) const;
-        void HandleForceBreathBar(AuraApplication const* aurApp, uint8 mode, bool apply) const;
 
         // aura effect periodic tick handlers
         void HandlePeriodicTriggerSpellAuraTick(Unit* target, Unit* caster) const;

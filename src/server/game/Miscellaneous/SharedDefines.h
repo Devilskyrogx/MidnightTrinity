@@ -971,7 +971,7 @@ enum SpellAttr14 : uint32
     SPELL_ATTR14_UNK17                           = 0x00020000, // TITLE Unknown attribute 17@Attr14
     SPELL_ATTR14_UNK18                           = 0x00040000, // TITLE Unknown attribute 18@Attr14
     SPELL_ATTR14_UNK19                           = 0x00080000, // TITLE Unknown attribute 19@Attr14
-    SPELL_ATTR14_AURA_IS_PRIVATE                                        = 0x00100000, // TITLE Aura is private DESCRIPTION Clientside attribue that prevents the aura from being accessed by addons (but is still visible in UI)
+    SPELL_ATTR14_AURA_IS_PRIVATE                                    = 0x00100000, // TITLE Aura is private DESCRIPTION Clientside attribue that prevents the aura from being accessed by addons (but is still visible in UI)
     SPELL_ATTR14_UNK21                           = 0x00200000, // TITLE Unknown attribute 21@Attr14
     SPELL_ATTR14_UNK22                           = 0x00400000, // TITLE Unknown attribute 22@Attr14
     SPELL_ATTR14_UNK23                           = 0x00800000, // TITLE Unknown attribute 23@Attr14
@@ -998,7 +998,7 @@ enum SpellAttr15 : uint32
     SPELL_ATTR15_UNK7                            = 0x00000080, // TITLE Unknown attribute 7@Attr15
     SPELL_ATTR15_UNK8                            = 0x00000100, // TITLE Unknown attribute 8@Attr15
     SPELL_ATTR15_UNK9                            = 0x00000200, // TITLE Unknown attribute 9@Attr15
-    SPELL_ATTR15_UNK10                           = 0x00000400, // TITLE Unknown attribute 10@Attr15
+    SPELL_ATTR15_AURA_HAS_SEPARATE_STACK_DURATIONS                  = 0x00000400, // TITLE Aura has separate stack durations
     SPELL_ATTR15_UNK11                           = 0x00000800, // TITLE Unknown attribute 11@Attr15
     SPELL_ATTR15_UNK12                           = 0x00001000, // TITLE Unknown attribute 12@Attr15
     SPELL_ATTR15_UNK13                           = 0x00002000, // TITLE Unknown attribute 13@Attr15
@@ -1703,6 +1703,7 @@ enum SpellEffects
     SPELL_EFFECT_357                                = 357, // MiscValue[0] = ItemBonusList
     SPELL_EFFECT_358                                = 358, // MiscValue[0] = ItemBonusList
     SPELL_EFFECT_359                                = 359,
+    SPELL_EFFECT_360                                = 360,
     TOTAL_SPELL_EFFECTS
 };
 
@@ -3089,9 +3090,9 @@ enum Targets
     TARGET_UNIT_RECT_CASTER                     = 130,
     TARGET_DEST_SUMMONER                        = 131,
     TARGET_DEST_TARGET_ALLY                     = 132,
-    TARGET_UNIT_LINE_CASTER_TO_DEST_ALLY        = 133,
-    TARGET_UNIT_LINE_CASTER_TO_DEST_ENEMY       = 134,
-    TARGET_UNIT_LINE_CASTER_TO_DEST             = 135,
+    TARGET_UNIT_RECT_CASTER_TO_DEST_ALLY        = 133,
+    TARGET_UNIT_RECT_CASTER_TO_DEST_ENEMY       = 134,
+    TARGET_UNIT_RECT_CASTER_TO_DEST             = 135,
     TARGET_UNIT_CONE_CASTER_TO_DEST_ALLY        = 136,
     TARGET_DEST_CASTER_MOVEMENT_DIRECTION       = 137,
     TARGET_DEST_DEST_GROUND                     = 138,
@@ -3225,9 +3226,11 @@ enum GameobjectTypes : uint8
     GAMEOBJECT_TYPE_PERKS_PROGRAM_CHEST         = 62,
     GAMEOBJECT_TYPE_FUTURE_PATCH                = 63,
     GAMEOBJECT_TYPE_ASSIST_ACTION               = 64,
+    GAMEOBJECT_TYPE_RESERVED_13A                = 65,
+    GAMEOBJECT_TYPE_RESERVED_13B                = 66,
 };
 
-#define MAX_GAMEOBJECT_TYPE                  65             // sending to client this or greater value can crash client.
+#define MAX_GAMEOBJECT_TYPE                  67             // sending to client this or greater value can crash client.
 #define MAX_GAMEOBJECT_DATA                  35             // Max number of uint32 vars in gameobject_template data field
 
 enum GameObjectFlags
@@ -6951,9 +6954,9 @@ enum BattlegroundTypeId : uint32
     BATTLEGROUND_SS_VS_TM       = 789,      // Southshore vs. Tarren Mill
     BATTLEGROUND_SMALL_D        = 803,      // Small Battleground D
     BATTLEGROUND_BRH            = 808,      // Black Rook Hold Arena
-    // 809 = "New Nagrand Arena (Legion)"
+    BATTLEGROUND_NA_NEW         = 809,      // New Nagrand Arena (Legion)
     BATTLEGROUND_AF             = 816,      // Ashamane's Fall
-    // 844 = "New Blade's Edge Arena (Legion)"
+    BATTLEGROUND_BE_NEW         = 844,      // New Blade's Edge Arena (Legion)
     BATTLEGROUND_BRAWL_TBG      = 846,      // Brawl - The Battle for Gilneas (Old City Map)
     BATTLEGROUND_BRAWL_ABW      = 847,      // Brawl - Arathi Basin Winter
     // 848 = "AI Test - Arathi Basin"
@@ -8771,6 +8774,8 @@ enum class GameError : uint32
     ERR_SOLO_JOIN_TRAINING_GROUND                                   = 1240,
     ERR_LFG_JOINED_TRAINING_GROUNDS_QUEUE                           = 1241,
     ERR_RESTRICTED_ACCOUNT_LFG_LIST_CLASS_TRIAL                     = 1242,
+    ERR_AGE_RESTRICTED_MAIL_MINOR                                   = 1243,
+    ERR_AGE_RESTRICTED_MAIL_UNVERIFIED                              = 1244,
 };
 
 enum class MountResult : uint32

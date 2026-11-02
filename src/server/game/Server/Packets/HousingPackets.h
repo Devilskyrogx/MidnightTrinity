@@ -195,7 +195,7 @@ namespace WorldPackets::Housing
     class HousingDecorSetPet final : public ClientPacket
     {
     public:
-        explicit HousingDecorSetPet(WorldPacket&& packet) : ClientPacket(CMSG_HOUSING_DECOR_SET_PET, std::move(packet)) { }
+        explicit HousingDecorSetPet(WorldPacket&& packet) : ClientPacket(CMSG_HOUSING_DECOR_SET_BATTLE_PET, std::move(packet)) { }
 
         void Read() override;
 
